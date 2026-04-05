@@ -1,0 +1,5 @@
+reportlab>=4.1
+Pillow>=11.0
+colorthief>=0.2.1
+PyYAML>=6.0
+exifread>=3.0
