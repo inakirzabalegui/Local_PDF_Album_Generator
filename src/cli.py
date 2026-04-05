@@ -99,6 +99,7 @@ def _run_render(project_dir: Path) -> None:
 
     from src.render.pdf_generator import generate_album
     from src.workspace.config import read_global_config, read_page_configs
+    from src.workspace.reconciler import reconcile
     from src.workspace.rebalancer import rebalance
     from src.utils.logger import setup_logger
 
@@ -107,6 +108,9 @@ def _run_render(project_dir: Path) -> None:
     logger.info(f"Leyendo proyecto en '{project_dir}' …")
     global_cfg = read_global_config(project_dir)
     pages = read_page_configs(project_dir, global_cfg)
+
+    logger.info("Reconciliando workspace (detectando cambios) …")
+    pages = reconcile(pages, global_cfg, project_dir)
 
     logger.info("Rebalanceando páginas …")
     pages = rebalance(pages, global_cfg, project_dir)

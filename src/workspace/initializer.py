@@ -91,6 +91,8 @@ def create_workspace(
     target_per_page = (cfg.photos_per_page_min + cfg.photos_per_page_max) // 2
     layout_modes = ["mesa_de_luz", "grid_compacto", "hibrido"]
 
+    import random as _rnd
+
     for source_group, group_photos in groups_dict.items():
         chunks = _chunk_photos_no_mix(group_photos, target_per_page, cfg.photos_per_page_min)
         logger.debug(f"Chunking {source_group}: {len(group_photos)} photos into {len(chunks)} pages")
@@ -98,19 +100,36 @@ def create_workspace(
         section_title = build_section_title(source_group)
         title_slug = folder_name_to_slug(prettify_folder_name(source_group))
 
+        # Track which sub_groups have already had their banner shown
+        seen_sub_groups: set[str] = set()
+
         for chunk_idx, chunk in enumerate(chunks, 1):
             folder_name = f"pagina_{page_number:02d}_{title_slug}"
             page_dir = workspace / folder_name
             page_dir.mkdir()
 
+            actual_count = 0
             for seq, photo in enumerate(chunk, start=1):
                 ext = photo.path.suffix.lower()
                 if ext not in (".jpg", ".jpeg"):
                     ext = ".jpg"
                 dst = page_dir / f"img_{seq:03d}{ext}"
-                downsample_image(photo.path, dst)
+                if downsample_image(photo.path, dst) is not None:
+                    actual_count += 1
 
-            import random as _rnd
+            # Determine if any new sub_groups start on this page
+            new_subs = []
+            for photo in chunk:
+                if photo.sub_group and photo.sub_group not in seen_sub_groups:
+                    seen_sub_groups.add(photo.sub_group)
+                    new_subs.append(photo.sub_group)
+
+            titles = [section_title]
+            if new_subs:
+                sub_label = " / ".join(prettify_folder_name(s) for s in new_subs)
+                titles.append(sub_label)
+                logger.debug(f"  Sub-banner on page {page_number}: {sub_label}")
+
             selected_mode = _rnd.choice(layout_modes)
             
             logger.debug(
@@ -122,8 +141,8 @@ def create_workspace(
                 PageConfig(
                     folder=page_dir,
                     page_number=page_number,
-                    photo_count=len(chunk),
-                    section_titles=[section_title],
+                    photo_count=actual_count,
+                    section_titles=titles,
                     layout_mode=selected_mode,
                 )
             )

@@ -19,6 +19,7 @@ logger = logging.getLogger("album")
 PAGE_W, PAGE_H = A4
 BASE_MARGIN = 18
 TITLE_SPACE = 40
+SUBTITLE_SPACE = 38
 BORDER_WIDTH = 4
 BASE_GAP = 6  # Gap between photos within rows and between rows
 
@@ -61,6 +62,7 @@ def compute_layout(
     *,
     layout_mode: str = "mesa_de_luz",
     has_title: bool = False,
+    has_subtitle: bool = False,
     page_w: float = PAGE_W,
     page_h: float = PAGE_H,
 ) -> list[PlacedPhoto]:
@@ -70,7 +72,8 @@ def compute_layout(
         image_paths: List of image file paths
         seed: Random seed for reproducibility
         layout_mode: One of 'mesa_de_luz', 'grid_compacto', 'hibrido'
-        has_title: Whether page has section title (reserves top space)
+        has_title: Whether page has main section title
+        has_subtitle: Whether page has a secondary sub-section title
         page_w, page_h: Page dimensions in points
     """
     n = len(image_paths)
@@ -80,7 +83,7 @@ def compute_layout(
     config = LAYOUT_CONFIGS.get(layout_mode, LAYOUT_CONFIGS["mesa_de_luz"])
     rng = random.Random(seed)
 
-    margin_top = BASE_MARGIN + (TITLE_SPACE if has_title else 0)
+    margin_top = BASE_MARGIN + (TITLE_SPACE if has_title else 0) + (SUBTITLE_SPACE if has_subtitle else 0)
     margin_side = BASE_MARGIN
     margin_bottom = BASE_MARGIN
 
@@ -93,15 +96,11 @@ def compute_layout(
     # Pack into justified rows
     rows = _justified_rows(aspect_ratios, usable_w, usable_h, BASE_GAP, config["fill_factor"])
 
-    # Calculate total height and determine vertical offset
+    # Calculate total height and center vertically if needed
     total_h = sum(h for _, h in rows) + BASE_GAP * (len(rows) - 1)
-    
-    if total_h < usable_h:
-        # Center vertically
-        y_offset = (usable_h - total_h) / 2
+    y_offset = max(0, (usable_h - total_h) / 2)
+    if y_offset > 0:
         logger.debug(f"    Centering vertically: y_offset={y_offset:.1f}pt")
-    else:
-        y_offset = 0
 
     # Compute final positions
     placed: list[PlacedPhoto] = []
@@ -111,15 +110,11 @@ def compute_layout(
     for row_ars, row_h in rows:
         row_photos = image_paths[photo_idx : photo_idx + len(row_ars)]
         
-        # Calculate actual row width (may be narrower if compressed)
+        # Calculate actual row width
         actual_row_w = sum(ar * row_h for ar in row_ars) + BASE_GAP * (len(row_ars) - 1)
         
-        # Center horizontally if row is narrower than usable width
-        if actual_row_w < usable_w:
-            x_offset = (usable_w - actual_row_w) / 2
-        else:
-            x_offset = 0
-        
+        # Center horizontally
+        x_offset = max(0, (usable_w - actual_row_w) / 2)
         current_x = margin_side + x_offset
 
         for i, (photo_path, ar) in enumerate(zip(row_photos, row_ars)):
@@ -129,32 +124,28 @@ def compute_layout(
             # Apply rotation
             rotation = rng.uniform(-config["rotation_range"], config["rotation_range"])
             
-            # Reduce photo size to account for rotated bounding box expansion
-            # For a box rotated by angle θ, the bounding box expands to:
-            # w_bbox = w*|cos(θ)| + h*|sin(θ)|, h_bbox = h*|cos(θ)| + w*|sin(θ)|
-            # We reduce photo dimensions so that after rotation, they fit in their space
+            # Reduce photo size for rotated photos to prevent bounding box bleed
+            # Rotated bounding box is larger: w' = w*cos(θ) + h*sin(θ)
             if abs(rotation) > 0.1:
-                rad = math.radians(rotation)
-                cos_a = abs(math.cos(rad))
-                sin_a = abs(math.sin(rad))
-                # Calculate required reduction factor
-                bbox_w = photo_w * cos_a + photo_h * sin_a
-                bbox_h = photo_h * cos_a + photo_w * sin_a
-                # Scale both dimensions to fit in original space
-                scale = min(photo_w / bbox_w, photo_h / bbox_h)
-                photo_w *= scale
-                photo_h *= scale
+                rad = abs(rotation) * math.pi / 180
+                # Reduce by the expansion factor
+                reduction = 1.0 / (math.cos(rad) + (photo_h/photo_w) * math.sin(rad))
+                reduction = min(reduction, 0.95)  # Max 5% reduction
+                photo_w *= reduction
+                photo_h *= reduction
 
-            # Apply jitter
-            jitter_x = rng.uniform(-BASE_GAP * config["jitter_factor"], BASE_GAP * config["jitter_factor"])
-            jitter_y = rng.uniform(-BASE_GAP * config["jitter_factor"], BASE_GAP * config["jitter_factor"])
+            # Apply jitter (reduced to prevent overflow)
+            max_jitter = BASE_GAP * config["jitter_factor"] * 0.5  # Reduce jitter by half
+            jitter_x = rng.uniform(-max_jitter, max_jitter)
+            jitter_y = rng.uniform(-max_jitter, max_jitter)
 
             x = current_x + jitter_x
             y = current_y + jitter_y
-            
-            # Clamp to ensure photo stays within page bounds after jitter
-            x = max(margin_side, min(x, page_w - margin_side - photo_w))
-            y = max(margin_top, min(y, page_h - margin_bottom - photo_h))
+
+            # Aggressive clamping to page bounds with extra margin
+            safety_margin = 2  # Extra 2pt safety margin
+            x = max(margin_side + safety_margin, min(x, PAGE_W - margin_side - photo_w - safety_margin))
+            y = max(margin_top + safety_margin, min(y, PAGE_H - margin_bottom - photo_h - safety_margin))
 
             # Compute z-index
             z = _interleaved_z(photo_idx, n, rng)
@@ -200,7 +191,9 @@ def _justified_rows(
         row_h = usable_h * fill_factor
         return [(aspect_ratios, row_h)]
 
-    # Try different row counts (2-4 max) and pick the best fill
+    # Try different row counts and pick best area coverage.
+    # Key insight: row_h = (usable_w - gaps) / sum(ARs) is the MAX height
+    # that fills width exactly. Never scale UP or photos exceed page width.
     best_layout = None
     best_score = -1
     best_num_rows = 0
@@ -212,24 +205,19 @@ def _justified_rows(
         partition = _balanced_partition(aspect_ratios, num_rows)
         row_data: list[tuple[list[float], float]] = []
         
-        # Compute row heights to fill full width
         for row_ars in partition:
             row_h = (usable_w - gap * (len(row_ars) - 1)) / sum(row_ars)
             row_data.append((row_ars, row_h))
         
-        # Calculate total height
         total_h = sum(h for _, h in row_data) + gap * (num_rows - 1)
         
-        # Score: prefer mild compression over severe underfill
+        # Symmetric scoring: measures how close total_h is to usable_h.
+        # Underfill: width=100%, height=partial → area ≈ total_h/usable_h
+        # Overflow (needs compression): height=100%, width=partial → area ≈ usable_h/total_h
         if total_h <= usable_h:
-            # No overflow: score by how much we fill
             score = total_h / usable_h
-        elif total_h <= usable_h * 1.25:
-            # Mild overflow (up to 25%): still acceptable, slight penalty
-            score = 0.9 * (usable_h / total_h)
         else:
-            # Severe overflow: heavily penalize
-            score = 0.3 * (usable_h / total_h)
+            score = usable_h / total_h
         
         logger.debug(f"    Trying {num_rows} rows: total_h={total_h:.1f}pt, score={score:.3f}")
         
@@ -240,23 +228,20 @@ def _justified_rows(
     
     logger.debug(f"    Selected {best_num_rows} rows (score={best_score:.3f})")
     
-    # Adjust for page fit WITHOUT scaling (which breaks width)
+    # Post-processing: NEVER scale up. Only compress if overflow.
     if best_layout:
         total_h = sum(h for _, h in best_layout) + gap * (len(best_layout) - 1)
         
         if total_h > usable_h:
-            # Must compress to fit
             scale = usable_h / total_h
-            logger.debug(f"    Compressing rows to fit by {scale:.3f}")
+            logger.debug(f"    Compressing to fit: scale={scale:.3f}")
             best_layout = [(ars, h * scale) for ars, h in best_layout]
         else:
-            # No scaling - will center vertically instead
             logger.debug(f"    Rows fit naturally ({total_h:.1f}pt / {usable_h:.1f}pt)")
         
-        # Log final layout
         for i, (ars, h) in enumerate(best_layout, 1):
-            avg_w = (usable_w - gap * (len(ars) - 1)) / len(ars)
-            logger.debug(f"    Row {i}: {len(ars)} photos, h={h:.1f}pt, avg_w={avg_w:.1f}pt")
+            actual_w = sum(ar * h for ar in ars) + gap * (len(ars) - 1)
+            logger.debug(f"    Row {i}: {len(ars)} photos, h={h:.1f}pt, row_w={actual_w:.1f}pt")
     
     return best_layout or []
 

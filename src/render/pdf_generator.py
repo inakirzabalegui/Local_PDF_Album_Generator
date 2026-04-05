@@ -98,11 +98,13 @@ def _render_content_page(
         return
 
     has_title = bool(page_cfg.section_titles)
+    has_subtitle = len(page_cfg.section_titles) > 1
     placed = compute_layout(
         images, 
         page_cfg.layout_seed, 
         layout_mode=page_cfg.layout_mode,
         has_title=has_title,
+        has_subtitle=has_subtitle,
     )
     
     logger.debug(f"  Layout computed: {len(placed)} photos placed")

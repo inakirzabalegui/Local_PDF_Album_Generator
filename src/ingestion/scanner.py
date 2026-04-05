@@ -19,6 +19,7 @@ class PhotoInfo:
     path: Path
     date_taken: datetime | None = None
     source_group: str = ""
+    sub_group: str = ""
     width: int = 0
     height: int = 0
 
@@ -42,15 +43,20 @@ def scan_directory(source_dir: Path) -> list[PhotoInfo]:
         if path.suffix.lower() not in VALID_EXTENSIONS:
             continue
 
-        group = _resolve_group(path, source_dir)
-        date = _read_exif_date(path)
+        group, sub = _resolve_group(path, source_dir)
         w, h = _read_dimensions(path)
+
+        if w == 0 or h == 0:
+            continue
+
+        date = _read_exif_date(path)
 
         photos.append(
             PhotoInfo(
                 path=path,
                 date_taken=date,
                 source_group=group,
+                sub_group=sub,
                 width=w,
                 height=h,
             )
@@ -59,12 +65,19 @@ def scan_directory(source_dir: Path) -> list[PhotoInfo]:
     return photos
 
 
-def _resolve_group(photo_path: Path, root: Path) -> str:
-    """Determine the source group name from the photo's relative position."""
+def _resolve_group(photo_path: Path, root: Path) -> tuple[str, str]:
+    """Determine (source_group, sub_group) from the photo's relative position.
+
+    source_group is the immediate child directory of root.
+    sub_group is the grandchild directory (one level deeper), or "" for
+    loose photos sitting directly in the source_group folder.
+    """
     rel = photo_path.relative_to(root)
     if len(rel.parts) == 1:
-        return root.name
-    return rel.parts[0]
+        return root.name, ""
+    group = rel.parts[0]
+    sub = rel.parts[1] if len(rel.parts) >= 3 else ""
+    return group, sub
 
 
 def _read_exif_date(path: Path) -> datetime | None:

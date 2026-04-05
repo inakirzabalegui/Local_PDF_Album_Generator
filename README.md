@@ -9,7 +9,8 @@ Aplicación CLI local para macOS que automatiza la creación de álbumes fotogr�
 - **Agrupación estricta**: cada subcarpeta genera páginas independientes, nunca se mezclan fotos de dos carpetas en la misma página
 - **Tres modos de layout**: `mesa_de_luz` (rotación +/-3°, jitter), `grid_compacto` (sin rotación, máxima densidad), `hibrido` (rotación sutil +/-1.5°, compacto)
 - **Fotos maximizadas**: 6-10 fotos por página con márgenes mínimos (18pt) y fill factors altos (93-97%)
-- **Ordenación cronológica** por metadatos EXIF `DateTimeOriginal`, con fallback aleatorio
+- **Sub-banners para subcarpetas hijas**: si una carpeta de sección contiene subcarpetas (1 nivel), se muestra un banner secundario más pequeño en la primera página donde aparecen esas fotos
+- **Ordenación cronológica** por metadatos EXIF `DateTimeOriginal`, con fallback inteligente por fecha de carpeta
 - **Downsampling optimizado** a 300 DPI con calidad 85% + redimensionado dinámico en PDF para minimizar el peso
 - **Fondos dinámicos**: color dominante calculado automáticamente por página vía ColorThief (optimizado con miniaturas)
 - **Portada profesional**: dos bandas con título del álbum (gruesa, primer tercio) y rango de fechas (fina, tercer tercio)
@@ -34,7 +35,13 @@ Los nombres de subcarpetas deben tener un prefijo de fecha en formato `YYYYMMDD_
 Si una carpeta no tiene prefijo de fecha, se usa el nombre directamente:
 - `Vacaciones_Verano` → Título: **"Vacaciones verano"**
 
-El título se renderiza como overlay flotante semi-transparente en la parte superior de la página. **Importante**: cada subcarpeta genera sus propias páginas, nunca se mezclan fotos de dos carpetas en una misma página.
+El título se renderiza como overlay flotante semi-transparente en la parte superior de la página. **Importante**: cada subcarpeta genera sus propias páginas, nunca se mezclan fotos de dos carpetas en la misma página.
+
+### Subcarpetas hijas (sub-banners)
+
+Si una carpeta de sección contiene subcarpetas hijas (un nivel de profundidad), las fotos de esas subcarpetas reciben un **banner secundario más pequeño** (10pt, barra fina) debajo del banner principal. Este sub-banner aparece solo en la **primera página** donde las fotos de esa subcarpeta empiezan. Las fotos de diferentes subcarpetas hijas pueden mezclarse en la misma página.
+
+Las fotos directamente en la carpeta padre (sin subcarpeta) no llevan sub-banner.
 
 ### Ejemplo de estructura de origen
 
@@ -43,10 +50,16 @@ mis_fotos/
 ├── 20260109_Comida_Despedida_Js/
 │   ├── IMG_001.jpg
 │   └── IMG_002.jpg
-├── 20260110_Paseo_Playa/
-│   ├── IMG_003.jpg
-│   └── IMG_004.jpg
-└── 20260112_Visita_Museo/
+├── 20260212_EEUU_LA_SanDiego_con_js/
+│   ├── IMG_010.jpg              ← fotos sueltas (sin sub-banner)
+│   ├── IMG_011.jpg
+│   ├── Los_Angeles_City/        ← sub-banner: "Los Angeles City"
+│   │   ├── IMG_020.jpg
+│   │   └── IMG_021.jpg
+│   └── San_Diego_Beach/         ← sub-banner: "San Diego Beach"
+│       ├── IMG_030.jpg
+│       └── IMG_031.jpg
+└── 20260315_Playa/
     ├── IMG_005.jpg
     └── IMG_006.jpg
 ```
@@ -149,11 +162,17 @@ viaje_italia_album/
 
 ### Intervención manual (opcional)
 
-Después de `--init`, puedes **mover, añadir o borrar fotos** de las subcarpetas de página libremente. El sistema se encargará de rebalancear al ejecutar `--render`.
+Después de `--init`, puedes **mover, añadir o borrar fotos** de las subcarpetas de página e incluso **eliminar carpetas/páginas completas**. Al ejecutar `--render`, el sistema:
+
+1. **Reconcilia** el workspace: detecta carpetas o fotos borradas, redistribuye las fotos restantes de cada sección equitativamente en el número mínimo de páginas necesario, elimina carpetas vacías, renumera y renombra las carpetas físicamente en disco.
+2. **Rebalancea** si alguna página queda fuera de los límites min/max de fotos.
+3. **Genera** el PDF final.
+
+El `layout_mode` y `layout_seed` de las páginas existentes se conservan durante la reconciliación.
 
 ### Fase 2: Renderizado del PDF (`--render`)
 
-Lee el estado actual del workspace, rebalancea si es necesario, y genera el PDF final.
+Lee el estado actual del workspace, reconcilia cambios, rebalancea si es necesario, y genera el PDF final.
 
 ```bash
 python make_album.py --render /ruta/al/workspace
@@ -251,9 +270,25 @@ Durante `--init`, se asigna un modo aleatorio a cada página. Puedes editarlo ma
 
 **Importante**: Las fotos de cada subcarpeta de origen se agrupan en páginas exclusivas. Nunca se mezclan fotos de dos carpetas en la misma página. Si una carpeta tiene pocas fotos en su última página, estas se renderizan más grandes para aprovechar el espacio.
 
-## Rebalanceo automático
+## Reconciliación y rebalanceo automático
 
-Si al editar manualmente el workspace una página queda con menos de 6 o más de 10 fotos, al ejecutar `--render` se activa el **rebalanceo en cascada**:
+Al ejecutar `--render`, el sistema ejecuta dos pasos previos a la generación del PDF:
+
+### Reconciliación (detecta borrados)
+
+Si entre `--init` y `--render` se han eliminado carpetas de página o fotos dentro de ellas:
+
+1. Se detectan las páginas vacías o con menos fotos de las esperadas
+2. Se reagrupan TODAS las fotos de cada sección y se redistribuyen equitativamente en el mínimo de páginas necesario
+3. Se eliminan carpetas vacías o sobrantes del disco
+4. Se renumeran las páginas secuencialmente y se renombran las carpetas
+5. Se actualizan los archivos `page_config.yaml`
+
+El `layout_mode` y `layout_seed` de las páginas originales se conservan.
+
+### Rebalanceo en cascada
+
+Si tras la reconciliación alguna página queda fuera del rango 6-10 fotos:
 
 - **Exceso**: las fotos sobrantes se mueven a la página siguiente
 - **Déficit**: se extraen fotos de la página siguiente
@@ -280,11 +315,12 @@ Local_PDF_Album_Generator/
     ├── cli.py                  # Parsing de argumentos (--init, --render)
     ├── ingestion/
     │   ├── scanner.py          # Escaneo recursivo + lectura EXIF
-    │   ├── sorter.py           # Ordenación cronológica con fallback
+    │   ├── sorter.py           # Ordenación cronológica con fallback por fecha de carpeta
     │   └── downsampler.py      # Resize a 300 DPI target
     ├── workspace/
     │   ├── initializer.py      # Creación de estructura de carpetas
     │   ├── config.py           # Lectura/escritura de YAMLs
+    │   ├── reconciler.py       # Reconciliación pre-render: detecta borrados y redistribuye
     │   └── rebalancer.py       # Cascada push/pull entre páginas
     ├── render/
     │   ├── layout.py           # 3 modos de layout (mesa_de_luz, grid_compacto, hibrido)
@@ -293,8 +329,19 @@ Local_PDF_Album_Generator/
     │   └── pdf_generator.py    # Orquestador ReportLab + optimización de imágenes
     └── utils/
         ├── color.py            # Extracción de color dominante (optimizado)
-        └── naming.py           # Parsing de nombres y fechas de carpetas
+        ├── naming.py           # Parsing de nombres y fechas de carpetas
+        └── logger.py           # Logging dual: consola (INFO) + archivo (DEBUG)
 ```
+
+## Ordenación y fotos sin EXIF
+
+Las fotos se ordenan cronológicamente por su fecha EXIF `DateTimeOriginal`. Para fotos que no tienen metadatos EXIF, el sistema asigna una fecha sintética para mantenerlas agrupadas con las demás fotos de su carpeta:
+
+1. **Prefijo de fecha de la carpeta**: si el nombre de la carpeta tiene formato `YYYYMMDD_...`, se usa esa fecha.
+2. **Fecha mediana de hermanas**: si otras fotos de la misma carpeta sí tienen EXIF, se usa la fecha mediana.
+3. **Fecha determinista**: como último recurso, se genera una fecha basada en el nombre de la carpeta para que las fotos siempre queden agrupadas.
+
+Esto garantiza que las fotos sin EXIF (capturas de pantalla, fotos descargadas, etc.) se mantengan junto a las demás fotos de su carpeta en lugar de mezclarse al final del álbum.
 
 ## Optimización del peso del PDF
 
