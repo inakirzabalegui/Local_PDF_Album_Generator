@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.ingestion.downsampler import downsample_image
+from src.utils.naming import (
+    build_section_title,
+    extract_date_from_folder,
+    folder_name_to_slug,
+    prettify_folder_name,
+)
 from src.workspace.config import GlobalConfig, PageConfig
 
 if TYPE_CHECKING:
     from src.ingestion.scanner import PhotoInfo
+
+logger = logging.getLogger("album")
 
 COVER_FOLDER = "portada"
 BACKCOVER_FOLDER = "contraportada"
@@ -20,13 +29,18 @@ def create_workspace(
     photos: list[PhotoInfo],
     workspace: Path,
     cfg: GlobalConfig | None = None,
+    source_dir_name: str | None = None,
 ) -> tuple[GlobalConfig, list[PageConfig]]:
     """Build the full workspace directory from a sorted photo list.
 
     Returns the global config and the list of page configs.
     """
     if cfg is None:
-        cfg = GlobalConfig(project_title=workspace.stem.replace("_album", ""))
+        if source_dir_name:
+            title = prettify_folder_name(source_dir_name)
+        else:
+            title = workspace.stem.replace("_album", "")
+        cfg = GlobalConfig(project_title=title)
 
     if workspace.exists():
         shutil.rmtree(workspace)
@@ -56,30 +70,64 @@ def create_workspace(
     backcover_photo = photos[-1] if len(photos) > 1 else None
     content_photos = photos[1:-1] if backcover_photo else photos[1:]
 
-    # ── Content pages ────────────────────────────────────────────────────
+    # ── Content pages: group by source_group WITHOUT mixing ─────────────
+    all_dates = []
+    groups_dict: dict[str, list[PhotoInfo]] = {}
+    for photo in content_photos:
+        if photo.source_group not in groups_dict:
+            groups_dict[photo.source_group] = []
+            date = extract_date_from_folder(photo.source_group)
+            if date:
+                all_dates.append(date)
+        groups_dict[photo.source_group].append(photo)
+
+    logger.debug(f"Grouped content photos into {len(groups_dict)} source groups")
+    for group_name, group_photos in groups_dict.items():
+        logger.debug(f"  {group_name}: {len(group_photos)} photos")
+
+    cfg.date_range = _calculate_date_range(all_dates)
+    logger.debug(f"Calculated album date range: {cfg.date_range}")
+
     target_per_page = (cfg.photos_per_page_min + cfg.photos_per_page_max) // 2
-    chunks = _chunk_photos(content_photos, target_per_page, cfg.photos_per_page_min)
+    layout_modes = ["mesa_de_luz", "grid_compacto", "hibrido"]
 
-    for idx, chunk in enumerate(chunks):
-        folder_name = f"pagina_{page_number:02d}"
-        page_dir = workspace / folder_name
-        page_dir.mkdir()
+    for source_group, group_photos in groups_dict.items():
+        chunks = _chunk_photos_no_mix(group_photos, target_per_page, cfg.photos_per_page_min)
+        logger.debug(f"Chunking {source_group}: {len(group_photos)} photos into {len(chunks)} pages")
+        
+        section_title = build_section_title(source_group)
+        title_slug = folder_name_to_slug(prettify_folder_name(source_group))
 
-        for seq, photo in enumerate(chunk, start=1):
-            ext = photo.path.suffix.lower()
-            if ext not in (".jpg", ".jpeg"):
-                ext = ".jpg"
-            dst = page_dir / f"img_{seq:03d}{ext}"
-            downsample_image(photo.path, dst)
+        for chunk_idx, chunk in enumerate(chunks, 1):
+            folder_name = f"pagina_{page_number:02d}_{title_slug}"
+            page_dir = workspace / folder_name
+            page_dir.mkdir()
 
-        page_configs.append(
-            PageConfig(
-                folder=page_dir,
-                page_number=page_number,
-                photo_count=len(chunk),
+            for seq, photo in enumerate(chunk, start=1):
+                ext = photo.path.suffix.lower()
+                if ext not in (".jpg", ".jpeg"):
+                    ext = ".jpg"
+                dst = page_dir / f"img_{seq:03d}{ext}"
+                downsample_image(photo.path, dst)
+
+            import random as _rnd
+            selected_mode = _rnd.choice(layout_modes)
+            
+            logger.debug(
+                f"  Chunk {chunk_idx}/{len(chunks)}: page_{page_number:02d}, "
+                f"{len(chunk)} photos, mode={selected_mode}"
             )
-        )
-        page_number += 1
+
+            page_configs.append(
+                PageConfig(
+                    folder=page_dir,
+                    page_number=page_number,
+                    photo_count=len(chunk),
+                    section_titles=[section_title],
+                    layout_mode=selected_mode,
+                )
+            )
+            page_number += 1
 
     # ── Back cover (placed last) ─────────────────────────────────────────
     if backcover_photo:
@@ -99,15 +147,14 @@ def create_workspace(
     return cfg, page_configs
 
 
-def _chunk_photos(
+def _chunk_photos_no_mix(
     photos: list[PhotoInfo],
     target: int,
     minimum: int,
 ) -> list[list[PhotoInfo]]:
-    """Split photos into page-sized chunks.
+    """Split photos into page-sized chunks WITHOUT mixing with other groups.
 
-    Each chunk has *target* photos, except possibly the last which gets
-    at least *minimum* by pulling from the previous chunk.
+    If last chunk < minimum, it stays as is (photos will render larger).
     """
     if not photos:
         return []
@@ -116,8 +163,15 @@ def _chunk_photos(
     for i in range(0, len(photos), target):
         chunks.append(photos[i : i + target])
 
-    if len(chunks) > 1 and len(chunks[-1]) < minimum:
-        last = chunks.pop()
-        chunks[-1].extend(last)
-
     return chunks
+
+
+def _calculate_date_range(dates: list[str]) -> str:
+    """Calculate date range string from list of dates in DD/MM/YYYY format."""
+    if not dates:
+        return ""
+    if len(dates) == 1:
+        return dates[0]
+    
+    sorted_dates = sorted(dates, key=lambda d: d.split("/")[::-1])
+    return f"{sorted_dates[0]} - {sorted_dates[-1]}"

@@ -33,7 +33,7 @@ def downsample_image(src: Path, dst: Path, *, dpi: int = TARGET_DPI) -> Path:
             img = img.convert("RGB")
 
         dst.parent.mkdir(parents=True, exist_ok=True)
-        img.save(dst, format="JPEG", quality=92, dpi=(dpi, dpi))
+        img.save(dst, format="JPEG", quality=85, dpi=(dpi, dpi))
 
     return dst
 

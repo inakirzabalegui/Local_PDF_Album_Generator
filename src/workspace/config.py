@@ -11,20 +11,42 @@ import yaml
 
 VALID_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
+# Path to the default configuration file at repository root
+DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent / "global_config_default.yaml"
+
 
 # ── Data models ──────────────────────────────────────────────────────────────
 
 
+def _load_default_config() -> dict[str, Any]:
+    """Load default configuration from global_config_default.yaml.
+    
+    Returns empty dict if file doesn't exist (use hardcoded defaults).
+    """
+    if DEFAULT_CONFIG_PATH.exists():
+        try:
+            with open(DEFAULT_CONFIG_PATH, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+                return data
+        except Exception:
+            pass
+    return {}
+
+
+_DEFAULT_CONFIG = _load_default_config()
+
+
 @dataclass
 class GlobalConfig:
-    page_size: str = "A4"
-    target_resolution_dpi: int = 300
-    photos_per_page_min: int = 4
-    photos_per_page_max: int = 9
-    max_pages_per_volume: int = 100
-    default_background_color: str = "#0000FF"
-    typography_system_font: str = "Helvetica"
+    page_size: str = _DEFAULT_CONFIG.get("page_size", "A4")
+    target_resolution_dpi: int = _DEFAULT_CONFIG.get("target_resolution_dpi", 300)
+    photos_per_page_min: int = _DEFAULT_CONFIG.get("photos_per_page_min", 6)
+    photos_per_page_max: int = _DEFAULT_CONFIG.get("photos_per_page_max", 10)
+    max_pages_per_volume: int = _DEFAULT_CONFIG.get("max_pages_per_volume", 100)
+    default_background_color: str = _DEFAULT_CONFIG.get("default_background_color", "#0000FF")
+    typography_system_font: str = _DEFAULT_CONFIG.get("typography_system_font", "Helvetica")
     project_title: str = "Album"
+    date_range: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -36,6 +58,7 @@ class GlobalConfig:
             "default_background_color": self.default_background_color,
             "typography_system_font": self.typography_system_font,
             "project_title": self.project_title,
+            "date_range": self.date_range,
         }
 
 
@@ -48,6 +71,8 @@ class PageConfig:
     override_background_color: str | None = None
     is_cover: bool = False
     is_backcover: bool = False
+    section_titles: list[str] = field(default_factory=list)
+    layout_mode: str = "mesa_de_luz"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -57,6 +82,8 @@ class PageConfig:
             "override_background_color": self.override_background_color,
             "is_cover": self.is_cover,
             "is_backcover": self.is_backcover,
+            "section_titles": self.section_titles,
+            "layout_mode": self.layout_mode,
         }
 
     def image_files(self) -> list[Path]:
@@ -128,6 +155,8 @@ def read_page_configs(workspace: Path, global_cfg: GlobalConfig) -> list[PageCon
                 override_background_color=data.get("override_background_color"),
                 is_cover=data.get("is_cover", False),
                 is_backcover=data.get("is_backcover", False),
+                section_titles=data.get("section_titles", []),
+                layout_mode=data.get("layout_mode", "mesa_de_luz"),
             )
         )
 

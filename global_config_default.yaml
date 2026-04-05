@@ -1,0 +1,27 @@
+# Default configuration for PDF Album Generator
+# These values are used as defaults when creating a new album with --init
+# You can edit them here to change the application-wide defaults
+# Each individual album can still override these values in its own global_config.yaml
+
+# Page size for the PDF (currently only A4 supported)
+page_size: "A4"
+
+# Target resolution for images (in DPI)
+target_resolution_dpi: 300
+
+# Minimum photos per page (must be >= 1)
+photos_per_page_min: 6
+
+# Maximum photos per page (must be <= 10)
+photos_per_page_max: 10
+
+# Maximum pages per PDF volume (for splitting large albums)
+max_pages_per_volume: 100
+
+# Default background color (RGB hex format)
+# Applied when no dominant color can be extracted from photos
+default_background_color: "#0000FF"
+
+# System font for titles and labels
+# Supported fonts: Helvetica, Times-Roman, Courier, etc.
+typography_system_font: "Helvetica"

@@ -21,6 +21,7 @@ def rebalance(
     """Rebalance photos across content pages so every page has min..max photos.
 
     Cover and backcover pages are excluded from rebalancing.
+    Rebalancing only occurs within pages of the same group (same section_titles).
     Returns the updated (and potentially rewritten) page list.
     """
     content = [p for p in pages if not p.is_cover and not p.is_backcover]
@@ -29,8 +30,16 @@ def rebalance(
     if not content:
         return pages
 
-    changed = _cascade_forward(content, cfg)
-    changed = _cascade_backward(content, cfg) or changed
+    groups = _group_by_section(content)
+    changed = False
+
+    for group_pages in groups.values():
+        if len(group_pages) <= 1:
+            continue
+        
+        changed_fwd = _cascade_forward(group_pages, cfg)
+        changed_bwd = _cascade_backward(group_pages, cfg)
+        changed = changed or changed_fwd or changed_bwd
 
     if changed:
         for pc in content:
@@ -43,6 +52,22 @@ def rebalance(
     all_pages = special + content
     all_pages.sort(key=lambda p: p.page_number)
     return all_pages
+
+
+def _group_by_section(pages: list[PageConfig]) -> dict[str, list[PageConfig]]:
+    """Group pages by their section_titles to prevent cross-group rebalancing."""
+    groups: dict[str, list[PageConfig]] = {}
+    for page in pages:
+        key = tuple(page.section_titles) if page.section_titles else ()
+        key_str = str(key)
+        if key_str not in groups:
+            groups[key_str] = []
+        groups[key_str].append(page)
+    
+    for group_pages in groups.values():
+        group_pages.sort(key=lambda p: p.page_number)
+    
+    return groups
 
 
 def _cascade_forward(pages: list[PageConfig], cfg: GlobalConfig) -> bool:

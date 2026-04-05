@@ -16,11 +16,12 @@ def render_cover(
     canvas,  # reportlab canvas
     image_path: Path,
     title: str,
+    date_range: str = "",
     font_name: str = "Helvetica",
 ) -> None:
     """Render a full-bleed cover page with center-cropped image and title overlay."""
     _draw_bleed_image(canvas, image_path)
-    _draw_title_overlay(canvas, title, font_name)
+    _draw_title_overlay(canvas, title, date_range, font_name)
     canvas.showPage()
 
 
@@ -45,23 +46,41 @@ def _draw_bleed_image(canvas, image_path: Path) -> None:
 def _draw_title_overlay(
     canvas,
     title: str,
+    date_range: str,
     font_name: str,
 ) -> None:
-    """Draw a semi-transparent bar with the album title on the cover."""
-    bar_height = 2.5 * cm
-    bar_y = PAGE_H * 0.38
-
+    """Draw two bands: thick band with title (top third) and thin band with dates (bottom third)."""
     canvas.saveState()
-    canvas.setFillColor(Color(0, 0, 0, alpha=0.45))
-    canvas.rect(0, bar_y, PAGE_W, bar_height, fill=1, stroke=0)
 
+    thick_bar_h = 3.0 * cm
+    thick_bar_y = PAGE_H * 0.70
+    
+    canvas.setFillColor(Color(0, 0, 0, alpha=0.5))
+    canvas.rect(0, thick_bar_y, PAGE_W, thick_bar_h, fill=1, stroke=0)
+    
     canvas.setFillColor(white)
-    font_size = 32
-    canvas.setFont(font_name, font_size)
-    text_w = canvas.stringWidth(title, font_name, font_size)
+    font_size_title = 36
+    canvas.setFont(font_name, font_size_title)
+    text_w = canvas.stringWidth(title, font_name, font_size_title)
     x = (PAGE_W - text_w) / 2
-    y = bar_y + (bar_height - font_size) / 2 + 4
+    y = thick_bar_y + (thick_bar_h - font_size_title) / 2 + 6
     canvas.drawString(x, y, title)
+
+    if date_range:
+        thin_bar_h = 1.2 * cm
+        thin_bar_y = PAGE_H * 0.12
+        
+        canvas.setFillColor(Color(0, 0, 0, alpha=0.35))
+        canvas.rect(0, thin_bar_y, PAGE_W, thin_bar_h, fill=1, stroke=0)
+        
+        canvas.setFillColor(white)
+        font_size_date = 16
+        canvas.setFont(font_name, font_size_date)
+        text_w_date = canvas.stringWidth(date_range, font_name, font_size_date)
+        x_date = (PAGE_W - text_w_date) / 2
+        y_date = thin_bar_y + (thin_bar_h - font_size_date) / 2 + 2
+        canvas.drawString(x_date, y_date, date_range)
+
     canvas.restoreState()
 
 

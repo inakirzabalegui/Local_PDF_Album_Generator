@@ -58,26 +58,30 @@ def _run_init(source_dir: Path) -> None:
     from src.ingestion.sorter import sort_photos
     from src.workspace.config import write_global_config, write_page_configs
     from src.workspace.initializer import create_workspace
+    from src.utils.logger import setup_logger
 
-    print(f"[init] Escaneando '{source_dir}' …")
+    workspace = source_dir.parent / f"{source_dir.name}_album"
+    workspace.mkdir(parents=True, exist_ok=True)
+    logger = setup_logger(workspace, "init")
+
+    logger.info(f"Escaneando '{source_dir}' …")
     photos = scan_directory(source_dir)
 
     if not photos:
-        print("Error: no se encontraron imágenes válidas.", file=sys.stderr)
+        logger.error("No se encontraron imágenes válidas.")
         sys.exit(1)
 
-    print(f"[init] {len(photos)} imágenes encontradas. Ordenando …")
+    logger.info(f"{len(photos)} imágenes encontradas. Ordenando …")
     sorted_photos = sort_photos(photos)
 
-    workspace = source_dir.parent / f"{source_dir.name}_album"
-    print(f"[init] Creando workspace en '{workspace}' …")
-    global_cfg, page_map = create_workspace(sorted_photos, workspace)
+    logger.info(f"Creando workspace en '{workspace}' …")
+    global_cfg, page_map = create_workspace(sorted_photos, workspace, source_dir_name=source_dir.name)
 
     write_global_config(workspace, global_cfg)
     write_page_configs(page_map)
 
-    print(f"[init] Workspace creado con {len(page_map)} página(s).")
-    print("[init] Listo. Puedes editar las carpetas y luego ejecutar --render.")
+    logger.info(f"Workspace creado con {len(page_map)} página(s).")
+    logger.info("Listo. Puedes editar las carpetas y luego ejecutar --render.")
 
 
 def _run_render(project_dir: Path) -> None:
@@ -96,17 +100,20 @@ def _run_render(project_dir: Path) -> None:
     from src.render.pdf_generator import generate_album
     from src.workspace.config import read_global_config, read_page_configs
     from src.workspace.rebalancer import rebalance
+    from src.utils.logger import setup_logger
 
-    print(f"[render] Leyendo proyecto en '{project_dir}' …")
+    logger = setup_logger(project_dir, "render")
+    
+    logger.info(f"Leyendo proyecto en '{project_dir}' …")
     global_cfg = read_global_config(project_dir)
     pages = read_page_configs(project_dir, global_cfg)
 
-    print("[render] Rebalanceando páginas …")
+    logger.info("Rebalanceando páginas …")
     pages = rebalance(pages, global_cfg, project_dir)
 
-    print(f"[render] Generando PDF ({len(pages)} página(s)) …")
+    logger.info(f"Generando PDF ({len(pages)} página(s)) …")
     output_paths = generate_album(pages, global_cfg, project_dir)
 
     for p in output_paths:
-        print(f"[render] PDF generado: {p}")
-    print("[render] Listo.")
+        logger.info(f"PDF generado: {p}")
+    logger.info("Listo.")

@@ -1,11 +1,11 @@
-"""Relaxed masonry layout algorithm – 'Light Table Effect'.
+"""Photo layout algorithms with justified row-packing collage style.
 
-Places N photos (4–9) on an A4 canvas with slight randomness in position
-and rotation, simulating photos scattered on a light table.
+Places N photos (6–10) on an A4 canvas using justified rows for optimal space usage.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 from dataclasses import dataclass
@@ -14,10 +14,31 @@ from pathlib import Path
 from PIL import Image
 from reportlab.lib.pagesizes import A4
 
-PAGE_W, PAGE_H = A4  # points (72 dpi)
-MARGIN = 36  # 0.5 inch margin on all sides
-BORDER_WIDTH = 4  # white border thickness in points
-ROTATION_RANGE = 3.0  # degrees ±
+logger = logging.getLogger("album")
+
+PAGE_W, PAGE_H = A4
+BASE_MARGIN = 18
+TITLE_SPACE = 40
+BORDER_WIDTH = 4
+BASE_GAP = 6  # Gap between photos within rows and between rows
+
+LAYOUT_CONFIGS = {
+    "mesa_de_luz": {
+        "rotation_range": 3.0,
+        "jitter_factor": 0.03,
+        "fill_factor": 0.93,
+    },
+    "grid_compacto": {
+        "rotation_range": 0.0,
+        "jitter_factor": 0.0,
+        "fill_factor": 0.97,
+    },
+    "hibrido": {
+        "rotation_range": 1.5,
+        "jitter_factor": 0.01,
+        "fill_factor": 0.95,
+    },
+}
 
 
 @dataclass
@@ -38,107 +59,244 @@ def compute_layout(
     image_paths: list[Path],
     seed: int,
     *,
+    layout_mode: str = "mesa_de_luz",
+    has_title: bool = False,
     page_w: float = PAGE_W,
     page_h: float = PAGE_H,
-    margin: float = MARGIN,
 ) -> list[PlacedPhoto]:
-    """Compute positions for all images on a single page.
+    """Compute positions for all images on a single page using justified row-packing.
 
-    Uses a grid-based approach with jitter for the 'light table' look.
+    Args:
+        image_paths: List of image file paths
+        seed: Random seed for reproducibility
+        layout_mode: One of 'mesa_de_luz', 'grid_compacto', 'hibrido'
+        has_title: Whether page has section title (reserves top space)
+        page_w, page_h: Page dimensions in points
     """
     n = len(image_paths)
     if n == 0:
         return []
 
+    config = LAYOUT_CONFIGS.get(layout_mode, LAYOUT_CONFIGS["mesa_de_luz"])
     rng = random.Random(seed)
 
-    cols, rows = _grid_dimensions(n)
-    usable_w = page_w - 2 * margin
-    usable_h = page_h - 2 * margin
-    cell_w = usable_w / cols
-    cell_h = usable_h / rows
+    margin_top = BASE_MARGIN + (TITLE_SPACE if has_title else 0)
+    margin_side = BASE_MARGIN
+    margin_bottom = BASE_MARGIN
 
+    usable_w = page_w - 2 * margin_side
+    usable_h = page_h - margin_top - margin_bottom
+
+    # Read actual aspect ratios
+    aspect_ratios = [_get_aspect_ratio(p) for p in image_paths]
+
+    # Pack into justified rows
+    rows = _justified_rows(aspect_ratios, usable_w, usable_h, BASE_GAP, config["fill_factor"])
+
+    # Calculate total height and determine vertical offset
+    total_h = sum(h for _, h in rows) + BASE_GAP * (len(rows) - 1)
+    
+    if total_h < usable_h:
+        # Center vertically
+        y_offset = (usable_h - total_h) / 2
+        logger.debug(f"    Centering vertically: y_offset={y_offset:.1f}pt")
+    else:
+        y_offset = 0
+
+    # Compute final positions
     placed: list[PlacedPhoto] = []
+    current_y = margin_top + y_offset
+    photo_idx = 0
 
-    for idx, img_path in enumerate(image_paths):
-        col = idx % cols
-        row = idx // cols
+    for row_ars, row_h in rows:
+        row_photos = image_paths[photo_idx : photo_idx + len(row_ars)]
+        
+        # Calculate actual row width (may be narrower if compressed)
+        actual_row_w = sum(ar * row_h for ar in row_ars) + BASE_GAP * (len(row_ars) - 1)
+        
+        # Center horizontally if row is narrower than usable width
+        if actual_row_w < usable_w:
+            x_offset = (usable_w - actual_row_w) / 2
+        else:
+            x_offset = 0
+        
+        current_x = margin_side + x_offset
 
-        img_w, img_h = _image_size(img_path)
-        if img_w == 0 or img_h == 0:
-            img_w, img_h = 400, 300
+        for i, (photo_path, ar) in enumerate(zip(row_photos, row_ars)):
+            photo_w = ar * row_h
+            photo_h = row_h
 
-        fit_w, fit_h = _fit_in_cell(
-            img_w, img_h, cell_w * 0.88, cell_h * 0.88
-        )
+            # Apply rotation
+            rotation = rng.uniform(-config["rotation_range"], config["rotation_range"])
+            
+            # Reduce photo size to account for rotated bounding box expansion
+            # For a box rotated by angle θ, the bounding box expands to:
+            # w_bbox = w*|cos(θ)| + h*|sin(θ)|, h_bbox = h*|cos(θ)| + w*|sin(θ)|
+            # We reduce photo dimensions so that after rotation, they fit in their space
+            if abs(rotation) > 0.1:
+                rad = math.radians(rotation)
+                cos_a = abs(math.cos(rad))
+                sin_a = abs(math.sin(rad))
+                # Calculate required reduction factor
+                bbox_w = photo_w * cos_a + photo_h * sin_a
+                bbox_h = photo_h * cos_a + photo_w * sin_a
+                # Scale both dimensions to fit in original space
+                scale = min(photo_w / bbox_w, photo_h / bbox_h)
+                photo_w *= scale
+                photo_h *= scale
 
-        base_x = margin + col * cell_w + (cell_w - fit_w) / 2
-        base_y = margin + row * cell_h + (cell_h - fit_h) / 2
+            # Apply jitter
+            jitter_x = rng.uniform(-BASE_GAP * config["jitter_factor"], BASE_GAP * config["jitter_factor"])
+            jitter_y = rng.uniform(-BASE_GAP * config["jitter_factor"], BASE_GAP * config["jitter_factor"])
 
-        jitter_x = rng.uniform(-cell_w * 0.06, cell_w * 0.06)
-        jitter_y = rng.uniform(-cell_h * 0.06, cell_h * 0.06)
+            x = current_x + jitter_x
+            y = current_y + jitter_y
+            
+            # Clamp to ensure photo stays within page bounds after jitter
+            x = max(margin_side, min(x, page_w - margin_side - photo_w))
+            y = max(margin_top, min(y, page_h - margin_bottom - photo_h))
 
-        x = base_x + jitter_x
-        y = base_y + jitter_y
+            # Compute z-index
+            z = _interleaved_z(photo_idx, n, rng)
 
-        rotation = rng.uniform(-ROTATION_RANGE, ROTATION_RANGE)
-
-        z = _interleaved_z(idx, n, rng)
-
-        placed.append(
-            PlacedPhoto(
-                path=img_path,
-                x=x,
-                y=y,
-                w=fit_w,
-                h=fit_h,
-                rotation=rotation,
-                z_index=z,
+            placed.append(
+                PlacedPhoto(
+                    path=photo_path,
+                    x=x,
+                    y=y,
+                    w=photo_w,
+                    h=photo_h,
+                    rotation=rotation,
+                    z_index=z,
+                )
             )
-        )
+
+            current_x += photo_w + BASE_GAP
+            photo_idx += 1
+
+        current_y += row_h + BASE_GAP
 
     placed.sort(key=lambda p: p.z_index)
     return placed
 
 
-def _grid_dimensions(n: int) -> tuple[int, int]:
-    """Choose a cols x rows grid for *n* photos."""
-    layouts: dict[int, tuple[int, int]] = {
-        1: (1, 1),
-        2: (2, 1),
-        3: (3, 1),
-        4: (2, 2),
-        5: (3, 2),
-        6: (3, 2),
-        7: (3, 3),
-        8: (3, 3),
-        9: (3, 3),
-    }
-    return layouts.get(n, (int(math.ceil(math.sqrt(n))), int(math.ceil(n / math.ceil(math.sqrt(n))))))
+def _justified_rows(
+    aspect_ratios: list[float],
+    usable_w: float,
+    usable_h: float,
+    gap: float,
+    fill_factor: float,
+) -> list[tuple[list[float], float]]:
+    """Pack photos into justified rows using balanced partition.
+
+    Returns list of (row_aspect_ratios, row_height) tuples.
+    """
+    n = len(aspect_ratios)
+    if n == 0:
+        return []
+    
+    # Single photo: fill most of the page
+    if n == 1:
+        row_h = usable_h * fill_factor
+        return [(aspect_ratios, row_h)]
+
+    # Try different row counts (2-4 max) and pick the best fill
+    best_layout = None
+    best_score = -1
+    best_num_rows = 0
+    
+    max_rows = min(n, 4)
+    min_rows = 2
+    
+    for num_rows in range(min_rows, max_rows + 1):
+        partition = _balanced_partition(aspect_ratios, num_rows)
+        row_data: list[tuple[list[float], float]] = []
+        
+        # Compute row heights to fill full width
+        for row_ars in partition:
+            row_h = (usable_w - gap * (len(row_ars) - 1)) / sum(row_ars)
+            row_data.append((row_ars, row_h))
+        
+        # Calculate total height
+        total_h = sum(h for _, h in row_data) + gap * (num_rows - 1)
+        
+        # Score: prefer mild compression over severe underfill
+        if total_h <= usable_h:
+            # No overflow: score by how much we fill
+            score = total_h / usable_h
+        elif total_h <= usable_h * 1.25:
+            # Mild overflow (up to 25%): still acceptable, slight penalty
+            score = 0.9 * (usable_h / total_h)
+        else:
+            # Severe overflow: heavily penalize
+            score = 0.3 * (usable_h / total_h)
+        
+        logger.debug(f"    Trying {num_rows} rows: total_h={total_h:.1f}pt, score={score:.3f}")
+        
+        if score > best_score:
+            best_score = score
+            best_layout = row_data
+            best_num_rows = num_rows
+    
+    logger.debug(f"    Selected {best_num_rows} rows (score={best_score:.3f})")
+    
+    # Adjust for page fit WITHOUT scaling (which breaks width)
+    if best_layout:
+        total_h = sum(h for _, h in best_layout) + gap * (len(best_layout) - 1)
+        
+        if total_h > usable_h:
+            # Must compress to fit
+            scale = usable_h / total_h
+            logger.debug(f"    Compressing rows to fit by {scale:.3f}")
+            best_layout = [(ars, h * scale) for ars, h in best_layout]
+        else:
+            # No scaling - will center vertically instead
+            logger.debug(f"    Rows fit naturally ({total_h:.1f}pt / {usable_h:.1f}pt)")
+        
+        # Log final layout
+        for i, (ars, h) in enumerate(best_layout, 1):
+            avg_w = (usable_w - gap * (len(ars) - 1)) / len(ars)
+            logger.debug(f"    Row {i}: {len(ars)} photos, h={h:.1f}pt, avg_w={avg_w:.1f}pt")
+    
+    return best_layout or []
 
 
-def _fit_in_cell(
-    img_w: int, img_h: int, cell_w: float, cell_h: float
-) -> tuple[float, float]:
-    """Scale image to fit inside cell while preserving aspect ratio."""
-    ratio = min(cell_w / img_w, cell_h / img_h)
-    return img_w * ratio, img_h * ratio
+def _balanced_partition(
+    aspect_ratios: list[float],
+    num_rows: int,
+) -> list[list[float]]:
+    """Distribute photos evenly across N rows.
+    
+    Simple strategy: split as evenly as possible by count.
+    """
+    n = len(aspect_ratios)
+    base = n // num_rows
+    extra = n % num_rows
+    
+    rows: list[list[float]] = []
+    idx = 0
+    
+    for r in range(num_rows):
+        size = base + (1 if r < extra else 0)
+        rows.append(aspect_ratios[idx:idx+size])
+        idx += size
+    
+    return rows
 
 
-def _image_size(path: Path) -> tuple[int, int]:
-    """Read image dimensions without fully loading pixel data."""
+def _get_aspect_ratio(path: Path) -> float:
+    """Read image aspect ratio (width/height)."""
     try:
         with Image.open(path) as img:
-            return img.size
+            w, h = img.size
+            if h == 0:
+                return 1.33
+            return w / h
     except Exception:
-        return (0, 0)
+        return 1.33  # Default landscape ratio
 
 
 def _interleaved_z(index: int, total: int, rng: random.Random) -> int:
-    """Generate a z-index that creates a natural stacking order.
-
-    Even indices get lower z (background), odd indices get higher z (foreground),
-    with a small random perturbation for realism.
-    """
+    """Generate a z-index that creates a natural stacking order."""
     base = index * 2
     return base + rng.randint(0, 1)

@@ -2,16 +2,30 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 from colorthief import ColorThief
+from PIL import Image
 
 
 def dominant_color(image_path: Path) -> tuple[int, int, int]:
-    """Extract the single dominant color from an image file."""
+    """Extract the single dominant color from an image file.
+    
+    Uses a thumbnail (150x150) to dramatically speed up color analysis.
+    """
     try:
-        ct = ColorThief(str(image_path))
-        return ct.get_color(quality=5)
+        img = Image.open(image_path)
+        img.thumbnail((150, 150))
+        
+        buf = io.BytesIO()
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        img.save(buf, format="JPEG")
+        buf.seek(0)
+        
+        ct = ColorThief(buf)
+        return ct.get_color(quality=1)
     except Exception:
         return (0, 0, 255)
 
