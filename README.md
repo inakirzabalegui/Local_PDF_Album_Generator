@@ -245,6 +245,35 @@ python make_album.py --render ~/Fotos/viaje_italia_album --from 15
 
 **Nota:** Los parámetros `--from` y `--to` son opcionales y solo válidos con `--render`.
 
+#### Renderizado de página única (debug)
+
+Puedes renderizar solo una página específica para pruebas rápidas usando `--page`. El PDF se genera dentro de la carpeta de la página con el nombre `page_XX.pdf`.
+
+**Comando directo:**
+```bash
+python make_album.py --render /ruta/workspace --page /ruta/workspace/pagina_04_evento
+```
+
+**Ejemplos:**
+```bash
+# Renderizar solo la página 4
+python make_album.py --render ~/Fotos/viaje_italia_album \
+  --page ~/Fotos/viaje_italia_album/pagina_04_comida_cumple_amona_y_helen
+
+# Usando el script shell
+./render_album.sh ~/Fotos/viaje_italia_album \
+  --page ~/Fotos/viaje_italia_album/pagina_04_comida_cumple_amona_y_helen
+```
+
+**Características:**
+- El PDF se genera dentro de la carpeta de página: `pagina_04_.../page_04.pdf`
+- NO incluye portada ni contraportada
+- Mutuamente excluyente con `--from` y `--to`
+- Útil para iterar rápidamente al ajustar `featured_photos` o `hero_photos`
+- El número de página en el PDF se toma del `page_number` en `page_config.yaml`
+
+**Nota:** Este modo es ideal para testing. Para el álbum final, usa render normal sin `--page`.
+
 El PDF se genera en la raíz del workspace:
 
 ```

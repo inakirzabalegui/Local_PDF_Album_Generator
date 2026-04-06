@@ -5,6 +5,7 @@
 #   ./render_album.sh /ruta/al/workspace                    # Renderizar todo
 #   ./render_album.sh /ruta/al/workspace --from 5 --to 10   # Renderizar páginas 5-10
 #   ./render_album.sh /ruta/al/workspace --from 0 --to 0    # Solo portada
+#   ./render_album.sh /ruta/al/workspace --page /ruta/workspace/pagina_04_comida  # Solo página específica
 
 # Obtener la ruta absoluta del directorio donde reside este script
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,12 +22,12 @@ fi
 
 # Verificar si se pasó un argumento
 if [ $# -eq 0 ]; then
-    echo "Uso: $0 /ruta/a/directorio_del_proyecto_album [--from N] [--to N]"
+    echo "Uso: $0 /ruta/a/directorio_del_proyecto_album [--from N] [--to N] [--page /ruta/carpeta]"
     echo ""
     echo "Ejemplos:"
     echo "  $0 ~/Fotos/viaje_album"
     echo "  $0 ~/Fotos/viaje_album --from 5 --to 10"
-    echo "  $0 ~/Fotos/viaje_album --from 0 --to 0"
+    echo "  $0 ~/Fotos/viaje_album --page ~/Fotos/viaje_album/pagina_04_comida"
     exit 1
 fi
 

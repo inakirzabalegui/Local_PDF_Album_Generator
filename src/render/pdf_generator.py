@@ -281,3 +281,29 @@ def _split_volumes(
     for i in range(0, len(pages), max_per_volume):
         volumes.append(pages[i : i + max_per_volume])
     return volumes
+
+
+def generate_single_page_pdf(
+    page_cfg: PageConfig,
+    global_cfg: GlobalConfig,
+) -> Path:
+    """Generate a PDF for a single page, saved in the page's folder.
+    
+    Returns the path to the generated PDF.
+    """
+    _register_fonts()
+    
+    # Nombre del PDF basado en el número de página
+    filename = f"page_{page_cfg.page_number:02d}.pdf"
+    output = page_cfg.folder / filename
+    
+    # Crear canvas
+    c = Canvas(str(output), pagesize=A4)
+    
+    # Renderizar la página
+    _render_content_page(c, page_cfg, global_cfg)
+    
+    # Guardar PDF
+    c.save()
+    
+    return output

@@ -58,6 +58,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "Solo válido con --render."
         ),
     )
+    parser.add_argument(
+        "--page",
+        metavar="PATH_CARPETA_PAGINA",
+        type=Path,
+        default=None,
+        help=(
+            "Renderizar solo una página específica. "
+            "Path absoluto a la carpeta de página (ej: /ruta/workspace/pagina_04_...). "
+            "El PDF se genera dentro de la carpeta como page_N.pdf. "
+            "Mutuamente excluyente con --from/--to."
+        ),
+    )
 
     return parser
 
@@ -67,12 +79,16 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.init:
-        if args.page_from is not None or args.page_to is not None:
-            print("Error: --from y --to solo son válidos con --render.", file=sys.stderr)
+        if args.page_from is not None or args.page_to is not None or args.page is not None:
+            print("Error: --from, --to y --page solo son válidos con --render.", file=sys.stderr)
             sys.exit(1)
         _run_init(args.init.resolve())
     elif args.render:
-        _run_render(args.render.resolve(), page_from=args.page_from, page_to=args.page_to)
+        # Validar que --page y --from/--to sean mutuamente excluyentes
+        if args.page is not None and (args.page_from is not None or args.page_to is not None):
+            print("Error: --page no puede usarse junto con --from/--to.", file=sys.stderr)
+            sys.exit(1)
+        _run_render(args.render.resolve(), page_from=args.page_from, page_to=args.page_to, single_page_path=args.page)
 
 
 def _run_init(source_dir: Path) -> None:
@@ -127,7 +143,7 @@ def _run_init(source_dir: Path) -> None:
     logger.info("Listo. Puedes editar las carpetas y luego ejecutar --render.")
 
 
-def _run_render(project_dir: Path, page_from: int | None = None, page_to: int | None = None) -> None:
+def _run_render(project_dir: Path, page_from: int | None = None, page_to: int | None = None, single_page_path: Path | None = None) -> None:
     if not project_dir.is_dir():
         print(f"Error: '{project_dir}' no es un directorio válido.", file=sys.stderr)
         sys.exit(1)
@@ -150,6 +166,12 @@ def _run_render(project_dir: Path, page_from: int | None = None, page_to: int | 
     
     logger.info(f"Leyendo proyecto en '{project_dir}' …")
     global_cfg = read_global_config(project_dir)
+    
+    # Si se especificó --page, renderizar solo esa página
+    if single_page_path is not None:
+        _render_single_page(single_page_path, global_cfg, logger)
+        return
+    
     pages = read_page_configs(project_dir, global_cfg)
 
     logger.info("Reconciliando workspace (detectando cambios) …")
@@ -202,3 +224,55 @@ def _filter_pages_by_range(pages: list, page_from: int | None, page_to: int | No
     logger.info(f"Filtrando páginas {from_idx} a {to_idx}: {len(filtered)} página(s) seleccionadas.")
     
     return filtered
+
+
+def _render_single_page(page_path: Path, global_cfg, logger) -> None:
+    """Renderizar una sola página y generar PDF en su carpeta."""
+    from src.workspace.config import PageConfig, VALID_IMAGE_EXTENSIONS
+    from src.render.pdf_generator import generate_single_page_pdf
+    import yaml
+    import random
+    
+    # Validar que el path existe y es un directorio
+    if not page_path.is_dir():
+        print(f"Error: '{page_path}' no es un directorio válido.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Validar que contiene page_config.yaml
+    config_file = page_path / "page_config.yaml"
+    if not config_file.exists():
+        print(f"Error: No se encontró 'page_config.yaml' en '{page_path}'.", file=sys.stderr)
+        sys.exit(1)
+    
+    # Leer la configuración de la página
+    with open(config_file, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    
+    # Obtener imágenes reales
+    actual_images = sorted(
+        p for p in page_path.iterdir()
+        if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
+    )
+    
+    # Crear PageConfig
+    page_cfg = PageConfig(
+        folder=page_path,
+        page_number=data.get("page_number", 0),
+        photo_count=len(actual_images),
+        layout_seed=data.get("layout_seed", random.randint(0, 2**31)),
+        override_background_color=data.get("override_background_color"),
+        is_cover=data.get("is_cover", False),
+        is_backcover=data.get("is_backcover", False),
+        section_titles=data.get("section_titles", []),
+        layout_mode=data.get("layout_mode", "mesa_de_luz"),
+        featured_photos=data.get("featured_photos", []),
+        hero_photos=data.get("hero_photos", []),
+    )
+    
+    logger.info(f"Renderizando página {page_cfg.page_number} …")
+    
+    # Generar PDF en la carpeta de la página
+    output_path = generate_single_page_pdf(page_cfg, global_cfg)
+    
+    logger.info(f"PDF generado: {output_path}")
+    logger.info("Listo.")
