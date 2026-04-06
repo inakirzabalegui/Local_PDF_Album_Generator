@@ -57,46 +57,79 @@ Crea una acción para inicializar álbumes a partir de carpetas de fotos.
 
 Borra el contenido por defecto y copia este script (reemplaza la ruta si es necesario):
 
+> **RECOMENDACIÓN**: Este script abre Terminal automáticamente para mostrar el progreso en tiempo real. Si prefieres una versión silenciosa, usa los scripts antiguos al final de este documento.
+
 ```bash
 #!/bin/zsh
 
 # ============================================================================
-# Quick Action: Inicializar Álbum
+# Quick Action: Inicializar Álbum (con Terminal visible)
 # Función: Ejecuta --init en una carpeta de fotos desde el menú del Finder
 # ============================================================================
 
-# CONFIGURACIÓN: Actualiza esta ruta si cambias de portátil
 REPO_PATH="/Users/jzabalegui/Coding/Local_PDF_Album_Generator"
 
-# Validar que el directorio del proyecto existe
+# Crear script temporal
+TEMP_SCRIPT=$(mktemp)
+
+cat > "$TEMP_SCRIPT" << 'EOF'
+#!/bin/zsh
+
+REPO_PATH="$1"
+FOLDER="$2"
+
+# Validaciones
 if [ ! -d "$REPO_PATH" ]; then
-    osascript -e 'display notification "Error: Ruta del proyecto no encontrada" with title "PDF Album Generator" subtitle "'"$REPO_PATH"'"'
+    echo "❌ Error: Ruta del proyecto no encontrada: $REPO_PATH"
     exit 1
 fi
 
-# Validar que existe el entorno virtual
 if [ ! -f "$REPO_PATH/.venv/bin/activate" ]; then
-    osascript -e 'display notification "Error: Entorno virtual no encontrado" with title "PDF Album Generator" subtitle "Ejecuta: python3.13 -m venv .venv"'
+    echo "❌ Error: Entorno virtual no encontrado"
+    echo "Ejecuta: cd '$REPO_PATH' && python3.13 -m venv .venv"
     exit 1
 fi
 
 # Activar entorno virtual
 source "$REPO_PATH/.venv/bin/activate"
+cd "$REPO_PATH"
 
-# Procesar cada carpeta seleccionada
+folder_name=$(basename "$FOLDER")
+echo ""
+echo "📁 Procesando: $folder_name"
+echo "🚀 Inicializando álbum..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+python3 make_album.py --init "$FOLDER"
+
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "✅ ¡Álbum inicializado correctamente!"
+    echo ""
+else
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "❌ Error al inicializar el álbum"
+    echo ""
+    exit 1
+fi
+
+echo "Presiona cualquier tecla para cerrar esta ventana..."
+read -k 1
+EOF
+
+chmod +x "$TEMP_SCRIPT"
+
+# Ejecutar en Terminal para cada carpeta
 for folder in "$@"; do
-    cd "$REPO_PATH" || exit 1
-    
-    # Ejecutar init
-    python3 make_album.py --init "$folder"
-    
-    # Capturar el estado de salida
-    if [ $? -eq 0 ]; then
-        folder_name=$(basename "$folder")
-        osascript -e 'display notification "✅ Álbum inicializado correctamente" with title "PDF Album Generator" subtitle "'"$folder_name"'"'
-    else
-        osascript -e 'display notification "❌ Error al inicializar el álbum" with title "PDF Album Generator"'
-    fi
+    osascript << APPLESCRIPT
+        tell application "Terminal"
+            activate
+            do script "bash '$TEMP_SCRIPT' '$REPO_PATH' '$folder'; rm '$TEMP_SCRIPT'"
+        end tell
+APPLESCRIPT
 done
 ```
 
@@ -120,42 +153,73 @@ Repite los pasos 1-4 del Quick Action 1, pero en el paso 5, usa este script:
 #!/bin/zsh
 
 # ============================================================================
-# Quick Action: Renderizar Álbum
+# Quick Action: Renderizar Álbum (con Terminal visible)
 # Función: Ejecuta --render en un workspace desde el menú del Finder
 # ============================================================================
 
-# CONFIGURACIÓN: Actualiza esta ruta si cambias de portátil
 REPO_PATH="/Users/jzabalegui/Coding/Local_PDF_Album_Generator"
 
-# Validar que el directorio del proyecto existe
+# Crear script temporal
+TEMP_SCRIPT=$(mktemp)
+
+cat > "$TEMP_SCRIPT" << 'EOF'
+#!/bin/zsh
+
+REPO_PATH="$1"
+FOLDER="$2"
+
+# Validaciones
 if [ ! -d "$REPO_PATH" ]; then
-    osascript -e 'display notification "Error: Ruta del proyecto no encontrada" with title "PDF Album Generator" subtitle "'"$REPO_PATH"'"'
+    echo "❌ Error: Ruta del proyecto no encontrada: $REPO_PATH"
     exit 1
 fi
 
-# Validar que existe el entorno virtual
 if [ ! -f "$REPO_PATH/.venv/bin/activate" ]; then
-    osascript -e 'display notification "Error: Entorno virtual no encontrado" with title "PDF Album Generator" subtitle "Ejecuta: python3.13 -m venv .venv"'
+    echo "❌ Error: Entorno virtual no encontrado"
+    echo "Ejecuta: cd '$REPO_PATH' && python3.13 -m venv .venv"
     exit 1
 fi
 
 # Activar entorno virtual
 source "$REPO_PATH/.venv/bin/activate"
+cd "$REPO_PATH"
 
-# Procesar cada carpeta seleccionada
+folder_name=$(basename "$FOLDER")
+echo ""
+echo "📁 Workspace: $folder_name"
+echo "🎨 Generando PDF..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+python3 make_album.py --render "$FOLDER"
+
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "✅ ¡PDF generado correctamente!"
+    echo ""
+else
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "❌ Error al renderizar el álbum"
+    echo ""
+    exit 1
+fi
+
+echo "Presiona cualquier tecla para cerrar esta ventana..."
+read -k 1
+EOF
+
+chmod +x "$TEMP_SCRIPT"
+
+# Ejecutar en Terminal para cada carpeta
 for folder in "$@"; do
-    cd "$REPO_PATH" || exit 1
-    
-    # Ejecutar render
-    python3 make_album.py --render "$folder"
-    
-    # Capturar el estado de salida
-    if [ $? -eq 0 ]; then
-        folder_name=$(basename "$folder")
-        osascript -e 'display notification "✅ PDF generado correctamente" with title "PDF Album Generator" subtitle "'"$folder_name"'"'
-    else
-        osascript -e 'display notification "❌ Error al renderizar el álbum" with title "PDF Album Generator"'
-    fi
+    osascript << APPLESCRIPT
+        tell application "Terminal"
+            activate
+            do script "bash '$TEMP_SCRIPT' '$REPO_PATH' '$folder'; rm '$TEMP_SCRIPT'"
+        end tell
+APPLESCRIPT
 done
 ```
 
@@ -175,45 +239,77 @@ Repite los pasos 1-4 del Quick Action 1, pero en el paso 5, usa este script:
 #!/bin/zsh
 
 # ============================================================================
-# Quick Action: Renderizar Página Única
+# Quick Action: Renderizar Página Única (con Terminal visible)
 # Función: Ejecuta --render --page en una carpeta de página desde el Finder
 # ============================================================================
 
-# CONFIGURACIÓN: Actualiza esta ruta si cambias de portátil
 REPO_PATH="/Users/jzabalegui/Coding/Local_PDF_Album_Generator"
 
-# Validar que el directorio del proyecto existe
+# Crear script temporal
+TEMP_SCRIPT=$(mktemp)
+
+cat > "$TEMP_SCRIPT" << 'EOF'
+#!/bin/zsh
+
+REPO_PATH="$1"
+PAGE_FOLDER="$2"
+
+# Validaciones
 if [ ! -d "$REPO_PATH" ]; then
-    osascript -e 'display notification "Error: Ruta del proyecto no encontrada" with title "PDF Album Generator" subtitle "'"$REPO_PATH"'"'
+    echo "❌ Error: Ruta del proyecto no encontrada: $REPO_PATH"
     exit 1
 fi
 
-# Validar que existe el entorno virtual
 if [ ! -f "$REPO_PATH/.venv/bin/activate" ]; then
-    osascript -e 'display notification "Error: Entorno virtual no encontrado" with title "PDF Album Generator" subtitle "Ejecuta: python3.13 -m venv .venv"'
+    echo "❌ Error: Entorno virtual no encontrado"
+    echo "Ejecuta: cd '$REPO_PATH' && python3.13 -m venv .venv"
     exit 1
 fi
+
+# Detectar el workspace (carpeta padre)
+WORKSPACE=$(dirname "$PAGE_FOLDER")
 
 # Activar entorno virtual
 source "$REPO_PATH/.venv/bin/activate"
+cd "$REPO_PATH"
 
-# Procesar cada carpeta seleccionada
+page_name=$(basename "$PAGE_FOLDER")
+echo ""
+echo "📄 Página: $page_name"
+echo "🎨 Renderizando página única..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+
+python3 make_album.py --render "$WORKSPACE" --page "$PAGE_FOLDER"
+
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "✅ ¡Página renderizada correctamente!"
+    echo "📁 PDF: $PAGE_FOLDER/page_*.pdf"
+    echo ""
+else
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "❌ Error al renderizar la página"
+    echo ""
+    exit 1
+fi
+
+echo "Presiona cualquier tecla para cerrar esta ventana..."
+read -k 1
+EOF
+
+chmod +x "$TEMP_SCRIPT"
+
+# Ejecutar en Terminal para cada carpeta
 for page_folder in "$@"; do
-    # Detectar el workspace (carpeta padre del directorio _album)
-    workspace=$(dirname "$page_folder")
-    
-    cd "$REPO_PATH" || exit 1
-    
-    # Ejecutar render con --page
-    python3 make_album.py --render "$workspace" --page "$page_folder"
-    
-    # Capturar el estado de salida
-    if [ $? -eq 0 ]; then
-        folder_name=$(basename "$page_folder")
-        osascript -e 'display notification "✅ Página renderizada correctamente" with title "PDF Album Generator" subtitle "'"$folder_name"'"'
-    else
-        osascript -e 'display notification "❌ Error al renderizar la página" with title "PDF Album Generator"'
-    fi
+    osascript << APPLESCRIPT
+        tell application "Terminal"
+            activate
+            do script "bash '$TEMP_SCRIPT' '$REPO_PATH' '$page_folder'; rm '$TEMP_SCRIPT'"
+        end tell
+APPLESCRIPT
 done
 ```
 
@@ -312,19 +408,91 @@ cp ~/Library/Services/"Inicializar Álbum PDF.workflow" ~/Library/Services/ 2>/d
 4. Selecciona uno nuevo o sube una imagen personalizada
 5. Guarda
 
-### Añadir parámetros personalizados
+### Usar versión silenciosa (sin Terminal visible)
 
-Para permitir que el usuario especifique parámetros (como `--from` y `--to`):
+Si prefieres que los Quick Actions se ejecuten **sin mostrar Terminal** (solo con notificaciones), reemplaza los scripts anteriores con los siguientes.
+
+#### Script silencioso para "Inicializar Álbum":
 
 ```bash
-# Antes del loop, solicita entrada
-read -p "Parámetros adicionales (ej: --from 5 --to 10): " ADDITIONAL_PARAMS
+#!/bin/zsh
 
-# Luego en el script
-python3 make_album.py --render "$folder" $ADDITIONAL_PARAMS
+REPO_PATH="/Users/jzabalegui/Coding/Local_PDF_Album_Generator"
+
+if [ ! -d "$REPO_PATH" ] || [ ! -f "$REPO_PATH/.venv/bin/activate" ]; then
+    osascript -e 'display notification "Error de configuración" with title "PDF Album Generator"'
+    exit 1
+fi
+
+source "$REPO_PATH/.venv/bin/activate"
+
+for folder in "$@"; do
+    cd "$REPO_PATH" || exit 1
+    python3 make_album.py --init "$folder"
+    
+    if [ $? -eq 0 ]; then
+        folder_name=$(basename "$folder")
+        osascript -e 'display notification "✅ Álbum inicializado" with title "PDF Album Generator" subtitle "'"$folder_name"'"'
+    else
+        osascript -e 'display notification "❌ Error en la inicialización" with title "PDF Album Generator"'
+    fi
+done
 ```
 
-> **Nota**: Esto abrirá una ventana de Terminal. Para una experiencia más integrada, usa un diálogo de Automator.
+#### Script silencioso para "Renderizar Álbum":
+
+```bash
+#!/bin/zsh
+
+REPO_PATH="/Users/jzabalegui/Coding/Local_PDF_Album_Generator"
+
+if [ ! -d "$REPO_PATH" ] || [ ! -f "$REPO_PATH/.venv/bin/activate" ]; then
+    osascript -e 'display notification "Error de configuración" with title "PDF Album Generator"'
+    exit 1
+fi
+
+source "$REPO_PATH/.venv/bin/activate"
+
+for folder in "$@"; do
+    cd "$REPO_PATH" || exit 1
+    python3 make_album.py --render "$folder"
+    
+    if [ $? -eq 0 ]; then
+        folder_name=$(basename "$folder")
+        osascript -e 'display notification "✅ PDF generado" with title "PDF Album Generator" subtitle "'"$folder_name"'"'
+    else
+        osascript -e 'display notification "❌ Error en renderización" with title "PDF Album Generator"'
+    fi
+done
+```
+
+#### Script silencioso para "Renderizar Página":
+
+```bash
+#!/bin/zsh
+
+REPO_PATH="/Users/jzabalegui/Coding/Local_PDF_Album_Generator"
+
+if [ ! -d "$REPO_PATH" ] || [ ! -f "$REPO_PATH/.venv/bin/activate" ]; then
+    osascript -e 'display notification "Error de configuración" with title "PDF Album Generator"'
+    exit 1
+fi
+
+source "$REPO_PATH/.venv/bin/activate"
+
+for page_folder in "$@"; do
+    workspace=$(dirname "$page_folder")
+    cd "$REPO_PATH" || exit 1
+    python3 make_album.py --render "$workspace" --page "$page_folder"
+    
+    if [ $? -eq 0 ]; then
+        folder_name=$(basename "$page_folder")
+        osascript -e 'display notification "✅ Página renderizada" with title "PDF Album Generator" subtitle "'"$folder_name"'"'
+    else
+        osascript -e 'display notification "❌ Error en página" with title "PDF Album Generator"'
+    fi
+done
+```
 
 ---
 
