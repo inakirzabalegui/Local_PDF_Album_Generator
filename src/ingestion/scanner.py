@@ -28,19 +28,38 @@ class PhotoInfo:
         return self.date_taken is not None
 
 
-def scan_directory(source_dir: Path) -> list[PhotoInfo]:
+@dataclass
+class ScanResult:
+    """Result of scanning a directory, with special folders separated."""
+
+    photos: list[PhotoInfo] = field(default_factory=list)
+    cover_photos: list[PhotoInfo] = field(default_factory=list)
+    backcover_photos: list[PhotoInfo] = field(default_factory=list)
+
+
+def scan_directory(source_dir: Path) -> ScanResult:
     """Recursively scan *source_dir* for valid images and extract metadata.
+
+    Special folders "portada" and "contraportada" (case-insensitive) are
+    detected and their photos are returned separately. These folders are
+    excluded from normal content processing.
 
     Subdirectories of *source_dir* are treated as source groups; files
     directly inside *source_dir* belong to the group named after the
     directory itself.
     """
-    photos: list[PhotoInfo] = []
+    result = ScanResult()
 
     for path in sorted(source_dir.rglob("*")):
         if not path.is_file():
             continue
         if path.suffix.lower() not in VALID_EXTENSIONS:
+            continue
+
+        # Determine if this photo belongs to a special folder
+        special_type = _detect_special_folder(path, source_dir)
+        
+        if special_type == "skip":
             continue
 
         group, sub = _resolve_group(path, source_dir)
@@ -51,18 +70,46 @@ def scan_directory(source_dir: Path) -> list[PhotoInfo]:
 
         date = _read_exif_date(path)
 
-        photos.append(
-            PhotoInfo(
-                path=path,
-                date_taken=date,
-                source_group=group,
-                sub_group=sub,
-                width=w,
-                height=h,
-            )
+        photo = PhotoInfo(
+            path=path,
+            date_taken=date,
+            source_group=group,
+            sub_group=sub,
+            width=w,
+            height=h,
         )
 
-    return photos
+        # Route to appropriate list
+        if special_type == "cover":
+            result.cover_photos.append(photo)
+        elif special_type == "backcover":
+            result.backcover_photos.append(photo)
+        else:
+            result.photos.append(photo)
+
+    return result
+
+
+def _detect_special_folder(photo_path: Path, root: Path) -> str:
+    """Detect if photo is in a special folder (portada/contraportada).
+    
+    Returns:
+        "cover" if in portada folder
+        "backcover" if in contraportada folder
+        "skip" if in a special folder but should be skipped
+        "" if normal photo
+    """
+    rel = photo_path.relative_to(root)
+    
+    # Check if any parent folder is a special folder (case-insensitive)
+    for part in rel.parts[:-1]:  # Exclude filename itself
+        part_lower = part.lower()
+        if part_lower == "portada":
+            return "cover"
+        elif part_lower == "contraportada":
+            return "backcover"
+    
+    return ""
 
 
 def _resolve_group(photo_path: Path, root: Path) -> tuple[str, str]:

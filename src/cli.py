@@ -91,17 +91,34 @@ def _run_init(source_dir: Path) -> None:
     logger = setup_logger(workspace, "init")
 
     logger.info(f"Escaneando '{source_dir}' …")
-    photos = scan_directory(source_dir)
+    scan_result = scan_directory(source_dir)
 
-    if not photos:
+    # Log special folders status
+    if scan_result.cover_photos:
+        logger.info(f"✓ Carpeta 'portada' encontrada: {len(scan_result.cover_photos)} foto(s)")
+    else:
+        logger.info("○ Carpeta 'portada' no encontrada, se usará foto aleatoria")
+    
+    if scan_result.backcover_photos:
+        logger.info(f"✓ Carpeta 'contraportada' encontrada: {len(scan_result.backcover_photos)} foto(s)")
+    else:
+        logger.info("○ Carpeta 'contraportada' no encontrada, se usará foto aleatoria")
+
+    if not scan_result.photos:
         logger.error("No se encontraron imágenes válidas.")
         sys.exit(1)
 
-    logger.info(f"{len(photos)} imágenes encontradas. Ordenando …")
-    sorted_photos = sort_photos(photos)
+    logger.info(f"{len(scan_result.photos)} imágenes encontradas. Ordenando …")
+    sorted_photos = sort_photos(scan_result.photos)
 
     logger.info(f"Creando workspace en '{workspace}' …")
-    global_cfg, page_map = create_workspace(sorted_photos, workspace, source_dir_name=source_dir.name)
+    global_cfg, page_map = create_workspace(
+        sorted_photos, 
+        workspace, 
+        source_dir_name=source_dir.name,
+        cover_candidates=scan_result.cover_photos,
+        backcover_candidates=scan_result.backcover_photos,
+    )
 
     write_global_config(workspace, global_cfg)
     write_page_configs(page_map)

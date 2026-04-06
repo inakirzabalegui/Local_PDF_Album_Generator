@@ -15,6 +15,7 @@ Aplicación CLI local para macOS que automatiza la creación de álbumes fotogr�
 - **Fondos dinámicos**: color dominante calculado automáticamente por página vía ColorThief (optimizado con miniaturas)
 - **Portada profesional**: dos bandas con título del álbum (gruesa, primer tercio) y rango de fechas (fina, tercer tercio)
 - **Contraportada**: center-crop a sangre completa
+- **Carpetas especiales**: carpetas `portada/` y `contraportada/` (case-insensitive) permiten seleccionar fotos específicas para las cubiertas del álbum
 - **Rebalanceo en cascada**: si mueves fotos entre carpetas manualmente, el sistema redistribuye automáticamente
 - **Volúmenes múltiples**: divide el PDF en varios archivos si se excede el límite de páginas (por defecto 200 páginas)
 - **Estado persistente en YAML**: seeds de layout para resultados reproducibles entre renders
@@ -45,10 +46,31 @@ Si una carpeta de sección contiene subcarpetas hijas (un nivel de profundidad),
 
 Las fotos directamente en la carpeta padre (sin subcarpeta) no llevan sub-banner.
 
+### Carpetas especiales para portada y contraportada
+
+Puedes controlar qué fotos se usan para la **portada** y **contraportada** del álbum creando carpetas especiales en el directorio de origen:
+
+- **`portada/` o `Portada/` o `PORTADA/`** (case-insensitive): Si existe esta carpeta, se seleccionará una foto aleatoria de ella para la portada del álbum.
+- **`contraportada/` o `Contraportada/` o `CONTRAPORTADA/`** (case-insensitive): Si existe esta carpeta, se seleccionará una foto aleatoria de ella para la contraportada del álbum.
+
+**Características:**
+- Las carpetas son detectadas de forma **case-insensitive** (puedes usar cualquier combinación de mayúsculas/minúsculas).
+- Si una carpeta especial contiene **múltiples fotos**, se selecciona una **aleatoriamente**.
+- Las fotos de estas carpetas **NO aparecen** en las páginas de contenido del álbum (están excluidas del procesamiento normal).
+- Si las carpetas no existen o están vacías, el sistema usa el **comportamiento por defecto**: primera foto para portada, última foto para contraportada.
+- El sistema **informa en consola** qué fotos se están usando durante el proceso `--init`.
+
+**Importante:** Estas carpetas deben estar en el **nivel raíz** del directorio de origen, no dentro de subcarpetas de eventos.
+
 ### Ejemplo de estructura de origen
 
 ```
 mis_fotos/
+├── portada/                     ← carpeta especial para portada
+│   ├── cover_01.jpg             ← se selecciona una aleatoriamente
+│   └── cover_02.jpg
+├── contraportada/               ← carpeta especial para contraportada
+│   └── back_01.jpg              ← foto para contraportada
 ├── 20260109_Comida_Despedida_Js/
 │   ├── IMG_001.jpg
 │   └── IMG_002.jpg

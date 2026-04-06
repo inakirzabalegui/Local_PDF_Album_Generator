@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,8 +31,14 @@ def create_workspace(
     workspace: Path,
     cfg: GlobalConfig | None = None,
     source_dir_name: str | None = None,
+    cover_candidates: list[PhotoInfo] | None = None,
+    backcover_candidates: list[PhotoInfo] | None = None,
 ) -> tuple[GlobalConfig, list[PageConfig]]:
     """Build the full workspace directory from a sorted photo list.
+
+    If cover_candidates or backcover_candidates are provided, a random photo
+    from those lists will be used. Otherwise, falls back to first/last photo
+    from the main photo list.
 
     Returns the global config and the list of page configs.
     """
@@ -50,8 +57,17 @@ def create_workspace(
     page_number = 0
 
     # ── Cover ────────────────────────────────────────────────────────────
-    if photos:
+    # Use special cover folder if available, otherwise use first photo
+    if cover_candidates:
+        cover_photo = random.choice(cover_candidates)
+        logger.info(f"Usando foto de carpeta 'portada': {cover_photo.path.name}")
+    elif photos:
         cover_photo = photos[0]
+        logger.info(f"Usando primera foto para portada: {cover_photo.path.name}")
+    else:
+        cover_photo = None
+    
+    if cover_photo:
         cover_dir = workspace / COVER_FOLDER
         cover_dir.mkdir()
         dst = cover_dir / f"cover{cover_photo.path.suffix.lower()}"
@@ -66,9 +82,19 @@ def create_workspace(
         )
         page_number += 1
 
-    # ── Back cover ───────────────────────────────────────────────────────
-    backcover_photo = photos[-1] if len(photos) > 1 else None
-    content_photos = photos[1:-1] if backcover_photo else photos[1:]
+    # ── Back cover selection ─────────────────────────────────────────────
+    # Use special backcover folder if available, otherwise use last photo
+    if backcover_candidates:
+        backcover_photo = random.choice(backcover_candidates)
+        logger.info(f"Usando foto de carpeta 'contraportada': {backcover_photo.path.name}")
+        content_photos = photos[1:] if photos else []
+    elif len(photos) > 1:
+        backcover_photo = photos[-1]
+        logger.info(f"Usando última foto para contraportada: {backcover_photo.path.name}")
+        content_photos = photos[1:-1]
+    else:
+        backcover_photo = None
+        content_photos = photos[1:] if photos else []
 
     # ── Content pages: group by source_group WITHOUT mixing ─────────────
     all_dates = []
