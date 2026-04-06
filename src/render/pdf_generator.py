@@ -12,6 +12,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen.canvas import Canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
 from src.render.covers import render_backcover, render_cover
 from src.render.layout import LAYOUT_CONFIGS, PlacedPhoto, compute_layout
@@ -20,6 +22,24 @@ from src.workspace.config import GlobalConfig, PageConfig
 
 PAGE_W, PAGE_H = A4
 logger = logging.getLogger("album")
+
+# Flag to track if fonts have been registered
+_FONTS_REGISTERED = False
+
+
+def _register_fonts() -> None:
+    """Register TrueType fonts for proper UTF-8 support (tildes, ñ, etc.)."""
+    global _FONTS_REGISTERED
+    if _FONTS_REGISTERED:
+        return
+    
+    try:
+        # Register Helvetica with UTF-8 support
+        pdfmetrics.registerFont(TTFont('HelveticaUTF8', '/System/Library/Fonts/Helvetica.ttc'))
+        logger.debug("Registered HelveticaUTF8 font for UTF-8 support")
+        _FONTS_REGISTERED = True
+    except Exception as exc:
+        logger.warning(f"Could not register TrueType font: {exc}. Falling back to standard fonts.")
 
 
 def generate_album(
@@ -31,6 +51,9 @@ def generate_album(
 
     Returns the list of output file paths.
     """
+    # Register fonts with UTF-8 support
+    _register_fonts()
+    
     content_pages = [p for p in pages if not p.is_cover and not p.is_backcover]
     cover = next((p for p in pages if p.is_cover), None)
     backcover = next((p for p in pages if p.is_backcover), None)
@@ -55,7 +78,7 @@ def generate_album(
                     images[0], 
                     cfg.project_title, 
                     cfg.date_range, 
-                    cfg.typography_system_font
+                    "HelveticaUTF8"
                 )
 
         total = len(vol_pages)
@@ -88,7 +111,7 @@ def _render_content_page(
     c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
 
     if page_cfg.section_titles:
-        _draw_section_titles(c, page_cfg.section_titles, global_cfg.typography_system_font)
+        _draw_section_titles(c, page_cfg.section_titles, "HelveticaUTF8")
         logger.debug(f"  Section titles: {page_cfg.section_titles}")
 
     images = page_cfg.image_files()
@@ -97,6 +120,9 @@ def _render_content_page(
         c.showPage()
         return
 
+    # Build weights list based on photo filenames
+    weights = [page_cfg.get_photo_weight(img.name, global_cfg) for img in images]
+    
     has_title = bool(page_cfg.section_titles)
     has_subtitle = len(page_cfg.section_titles) > 1
     placed = compute_layout(
@@ -105,6 +131,7 @@ def _render_content_page(
         layout_mode=page_cfg.layout_mode,
         has_title=has_title,
         has_subtitle=has_subtitle,
+        weights=weights,
     )
     
     logger.debug(f"  Layout computed: {len(placed)} photos placed")
@@ -143,7 +170,7 @@ def _render_content_page(
         c.restoreState()
 
     # Draw page number
-    _draw_page_number(c, page_cfg.page_number, global_cfg.typography_system_font)
+    _draw_page_number(c, page_cfg.page_number, "HelveticaUTF8")
 
     c.showPage()
 

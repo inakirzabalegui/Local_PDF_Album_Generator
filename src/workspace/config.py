@@ -45,6 +45,8 @@ class GlobalConfig:
     max_pages_per_volume: int = _DEFAULT_CONFIG.get("max_pages_per_volume", 100)
     default_background_color: str = _DEFAULT_CONFIG.get("default_background_color", "#0000FF")
     typography_system_font: str = _DEFAULT_CONFIG.get("typography_system_font", "Helvetica")
+    weight_destacada: float = _DEFAULT_CONFIG.get("weight_destacada", 1.5)
+    weight_protagonista: float = _DEFAULT_CONFIG.get("weight_protagonista", 2.5)
     project_title: str = "Album"
     date_range: str = ""
 
@@ -57,6 +59,8 @@ class GlobalConfig:
             "max_pages_per_volume": self.max_pages_per_volume,
             "default_background_color": self.default_background_color,
             "typography_system_font": self.typography_system_font,
+            "weight_destacada": self.weight_destacada,
+            "weight_protagonista": self.weight_protagonista,
             "project_title": self.project_title,
             "date_range": self.date_range,
         }
@@ -73,6 +77,8 @@ class PageConfig:
     is_backcover: bool = False
     section_titles: list[str] = field(default_factory=list)
     layout_mode: str = "mesa_de_luz"
+    featured_photos: list[str] = field(default_factory=list)
+    hero_photos: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +90,8 @@ class PageConfig:
             "is_backcover": self.is_backcover,
             "section_titles": self.section_titles,
             "layout_mode": self.layout_mode,
+            "featured_photos": self.featured_photos,
+            "hero_photos": self.hero_photos,
         }
 
     def image_files(self) -> list[Path]:
@@ -95,6 +103,20 @@ class PageConfig:
             for p in self.folder.iterdir()
             if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
         )
+
+    def get_photo_weight(self, filename: str, global_cfg: GlobalConfig) -> float:
+        """Return the weight multiplier for a given photo filename.
+        
+        Returns:
+            - weight_protagonista if photo is in hero_photos
+            - weight_destacada if photo is in featured_photos
+            - 1.0 for normal photos
+        """
+        if filename in self.hero_photos:
+            return global_cfg.weight_protagonista
+        elif filename in self.featured_photos:
+            return global_cfg.weight_destacada
+        return 1.0
 
 
 # ── Writers ──────────────────────────────────────────────────────────────────
@@ -157,6 +179,8 @@ def read_page_configs(workspace: Path, global_cfg: GlobalConfig) -> list[PageCon
                 is_backcover=data.get("is_backcover", False),
                 section_titles=data.get("section_titles", []),
                 layout_mode=data.get("layout_mode", "mesa_de_luz"),
+                featured_photos=data.get("featured_photos", []),
+                hero_photos=data.get("hero_photos", []),
             )
         )
 

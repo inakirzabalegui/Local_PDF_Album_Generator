@@ -36,6 +36,29 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--from",
+        dest="page_from",
+        metavar="N",
+        type=int,
+        default=None,
+        help=(
+            "Renderizar desde la página N (0 = portada). "
+            "Solo válido con --render."
+        ),
+    )
+    parser.add_argument(
+        "--to",
+        dest="page_to",
+        metavar="N",
+        type=int,
+        default=None,
+        help=(
+            "Renderizar hasta la página N (inclusive). "
+            "Solo válido con --render."
+        ),
+    )
+
     return parser
 
 
@@ -44,9 +67,12 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.init:
+        if args.page_from is not None or args.page_to is not None:
+            print("Error: --from y --to solo son válidos con --render.", file=sys.stderr)
+            sys.exit(1)
         _run_init(args.init.resolve())
     elif args.render:
-        _run_render(args.render.resolve())
+        _run_render(args.render.resolve(), page_from=args.page_from, page_to=args.page_to)
 
 
 def _run_init(source_dir: Path) -> None:
@@ -84,7 +110,7 @@ def _run_init(source_dir: Path) -> None:
     logger.info("Listo. Puedes editar las carpetas y luego ejecutar --render.")
 
 
-def _run_render(project_dir: Path) -> None:
+def _run_render(project_dir: Path, page_from: int | None = None, page_to: int | None = None) -> None:
     if not project_dir.is_dir():
         print(f"Error: '{project_dir}' no es un directorio válido.", file=sys.stderr)
         sys.exit(1)
@@ -115,9 +141,47 @@ def _run_render(project_dir: Path) -> None:
     logger.info("Rebalanceando páginas …")
     pages = rebalance(pages, global_cfg, project_dir)
 
+    # Apply page range filter if specified
+    if page_from is not None or page_to is not None:
+        pages = _filter_pages_by_range(pages, page_from, page_to, logger)
+
     logger.info(f"Generando PDF ({len(pages)} página(s)) …")
     output_paths = generate_album(pages, global_cfg, project_dir)
 
     for p in output_paths:
         logger.info(f"PDF generado: {p}")
     logger.info("Listo.")
+
+
+def _filter_pages_by_range(pages: list, page_from: int | None, page_to: int | None, logger) -> list:
+    """Filter pages by visual page range (0=cover, 1..N=content, last=backcover)."""
+    if not pages:
+        return pages
+    
+    # Separate pages by type
+    cover = next((p for p in pages if p.is_cover), None)
+    backcover = next((p for p in pages if p.is_backcover), None)
+    content = [p for p in pages if not p.is_cover and not p.is_backcover]
+    
+    # Build visual index mapping: 0=cover, 1..N=content pages, last=backcover
+    visual_pages = []
+    if cover:
+        visual_pages.append((0, cover))
+    
+    for page in sorted(content, key=lambda p: p.page_number):
+        visual_pages.append((page.page_number, page))
+    
+    if backcover:
+        # Backcover gets the visual index after all content pages
+        last_visual_idx = visual_pages[-1][0] + 1 if visual_pages else 1
+        visual_pages.append((last_visual_idx, backcover))
+    
+    # Apply range filter
+    from_idx = page_from if page_from is not None else 0
+    to_idx = page_to if page_to is not None else visual_pages[-1][0] if visual_pages else 0
+    
+    filtered = [page for visual_idx, page in visual_pages if from_idx <= visual_idx <= to_idx]
+    
+    logger.info(f"Filtrando páginas {from_idx} a {to_idx}: {len(filtered)} página(s) seleccionadas.")
+    
+    return filtered

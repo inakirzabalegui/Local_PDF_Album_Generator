@@ -16,7 +16,7 @@ photos_per_page_min: 6
 photos_per_page_max: 10
 
 # Maximum pages per PDF volume (for splitting large albums)
-max_pages_per_volume: 100
+max_pages_per_volume: 200
 
 # Default background color (RGB hex format)
 # Applied when no dominant color can be extracted from photos
@@ -25,3 +25,8 @@ default_background_color: "#0000FF"
 # System font for titles and labels
 # Supported fonts: Helvetica, Times-Roman, Courier, etc.
 typography_system_font: "Helvetica"
+
+# Weight multipliers for featured photos
+# Used in page_config.yaml's featured_photos and hero_photos lists
+weight_destacada: 1.5
+weight_protagonista: 2.5

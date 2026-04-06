@@ -63,6 +63,7 @@ def compute_layout(
     layout_mode: str = "mesa_de_luz",
     has_title: bool = False,
     has_subtitle: bool = False,
+    weights: list[float] | None = None,
     page_w: float = PAGE_W,
     page_h: float = PAGE_H,
 ) -> list[PlacedPhoto]:
@@ -74,11 +75,15 @@ def compute_layout(
         layout_mode: One of 'mesa_de_luz', 'grid_compacto', 'hibrido'
         has_title: Whether page has main section title
         has_subtitle: Whether page has a secondary sub-section title
+        weights: Optional list of weight multipliers (one per photo, default 1.0)
         page_w, page_h: Page dimensions in points
     """
     n = len(image_paths)
     if n == 0:
         return []
+
+    if weights is None:
+        weights = [1.0] * n
 
     config = LAYOUT_CONFIGS.get(layout_mode, LAYOUT_CONFIGS["mesa_de_luz"])
     rng = random.Random(seed)
@@ -93,8 +98,8 @@ def compute_layout(
     # Read actual aspect ratios
     aspect_ratios = [_get_aspect_ratio(p) for p in image_paths]
 
-    # Pack into justified rows
-    rows = _justified_rows(aspect_ratios, usable_w, usable_h, BASE_GAP, config["fill_factor"])
+    # Pack into justified rows (uses effective ARs for weighted photos)
+    rows = _justified_rows(aspect_ratios, usable_w, usable_h, BASE_GAP, config["fill_factor"], weights)
 
     # Calculate total height and center vertically if needed
     total_h = sum(h for _, h in rows) + BASE_GAP * (len(rows) - 1)
@@ -107,18 +112,19 @@ def compute_layout(
     current_y = margin_top + y_offset
     photo_idx = 0
 
-    for row_ars, row_h in rows:
-        row_photos = image_paths[photo_idx : photo_idx + len(row_ars)]
+    for row_eff_ars, row_h in rows:
+        row_photos = image_paths[photo_idx : photo_idx + len(row_eff_ars)]
+        row_real_ars = aspect_ratios[photo_idx : photo_idx + len(row_eff_ars)]
         
-        # Calculate actual row width
-        actual_row_w = sum(ar * row_h for ar in row_ars) + BASE_GAP * (len(row_ars) - 1)
+        # Calculate actual row width using REAL aspect ratios
+        actual_row_w = sum(ar * row_h for ar in row_real_ars) + BASE_GAP * (len(row_real_ars) - 1)
         
         # Center horizontally
         x_offset = max(0, (usable_w - actual_row_w) / 2)
         current_x = margin_side + x_offset
 
-        for i, (photo_path, ar) in enumerate(zip(row_photos, row_ars)):
-            photo_w = ar * row_h
+        for i, (photo_path, real_ar) in enumerate(zip(row_photos, row_real_ars)):
+            photo_w = real_ar * row_h
             photo_h = row_h
 
             # Apply rotation
@@ -177,22 +183,32 @@ def _justified_rows(
     usable_h: float,
     gap: float,
     fill_factor: float,
+    weights: list[float] | None = None,
 ) -> list[tuple[list[float], float]]:
     """Pack photos into justified rows using balanced partition.
 
     Returns list of (row_aspect_ratios, row_height) tuples.
+    
+    weights: Optional list of weight multipliers (one per photo). Weighted photos
+             claim more space by using effective_ar = ar * weight.
     """
     n = len(aspect_ratios)
     if n == 0:
         return []
+    
+    if weights is None:
+        weights = [1.0] * n
     
     # Single photo: fill most of the page
     if n == 1:
         row_h = usable_h * fill_factor
         return [(aspect_ratios, row_h)]
 
+    # Use effective ARs for layout calculations (weighted photos appear "wider")
+    effective_ars = [ar * w for ar, w in zip(aspect_ratios, weights)]
+
     # Try different row counts and pick best area coverage.
-    # Key insight: row_h = (usable_w - gaps) / sum(ARs) is the MAX height
+    # Key insight: row_h = (usable_w - gaps) / sum(effective_ARs) is the MAX height
     # that fills width exactly. Never scale UP or photos exceed page width.
     best_layout = None
     best_score = -1
@@ -202,12 +218,12 @@ def _justified_rows(
     min_rows = 2
     
     for num_rows in range(min_rows, max_rows + 1):
-        partition = _balanced_partition(aspect_ratios, num_rows)
+        partition = _balanced_partition(effective_ars, num_rows, weights)
         row_data: list[tuple[list[float], float]] = []
         
-        for row_ars in partition:
-            row_h = (usable_w - gap * (len(row_ars) - 1)) / sum(row_ars)
-            row_data.append((row_ars, row_h))
+        for row_eff_ars in partition:
+            row_h = (usable_w - gap * (len(row_eff_ars) - 1)) / sum(row_eff_ars)
+            row_data.append((row_eff_ars, row_h))
         
         total_h = sum(h for _, h in row_data) + gap * (num_rows - 1)
         
@@ -247,24 +263,39 @@ def _justified_rows(
 
 
 def _balanced_partition(
-    aspect_ratios: list[float],
+    effective_ars: list[float],
     num_rows: int,
+    weights: list[float] | None = None,
 ) -> list[list[float]]:
-    """Distribute photos evenly across N rows.
+    """Distribute photos across N rows by weight sum.
     
-    Simple strategy: split as evenly as possible by count.
+    Weighted photos gravitate to rows with fewer neighbors, naturally becoming bigger.
     """
-    n = len(aspect_ratios)
-    base = n // num_rows
-    extra = n % num_rows
+    n = len(effective_ars)
+    if weights is None:
+        weights = [1.0] * n
+    
+    total_weight = sum(weights)
+    target_per_row = total_weight / num_rows
     
     rows: list[list[float]] = []
+    current_row: list[float] = []
+    current_weight = 0.0
     idx = 0
     
-    for r in range(num_rows):
-        size = base + (1 if r < extra else 0)
-        rows.append(aspect_ratios[idx:idx+size])
-        idx += size
+    for i in range(n):
+        current_row.append(effective_ars[i])
+        current_weight += weights[i]
+        
+        # Start new row if we've reached target weight (but not on last row)
+        if current_weight >= target_per_row and len(rows) < num_rows - 1:
+            rows.append(current_row)
+            current_row = []
+            current_weight = 0.0
+    
+    # Add remaining photos to last row
+    if current_row:
+        rows.append(current_row)
     
     return rows
 

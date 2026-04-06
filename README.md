@@ -16,9 +16,11 @@ Aplicación CLI local para macOS que automatiza la creación de álbumes fotogr�
 - **Portada profesional**: dos bandas con título del álbum (gruesa, primer tercio) y rango de fechas (fina, tercer tercio)
 - **Contraportada**: center-crop a sangre completa
 - **Rebalanceo en cascada**: si mueves fotos entre carpetas manualmente, el sistema redistribuye automáticamente
-- **Volúmenes múltiples**: divide el PDF en varios archivos si se excede el límite de páginas
+- **Volúmenes múltiples**: divide el PDF en varios archivos si se excede el límite de páginas (por defecto 200 páginas)
 - **Estado persistente en YAML**: seeds de layout para resultados reproducibles entre renders
 - **Barra de progreso**: indicador visual durante la generación del PDF
+- **Soporte UTF-8 completo**: renderizado correcto de tildes, ñ, y otros caracteres especiales en títulos y textos mediante fuentes TrueType
+- **Renderizado parcial**: opción de generar solo un rango específico de páginas del álbum
 
 ## Organización por secciones
 
@@ -107,7 +109,7 @@ page_size: "A4"                        # Tamaño de página
 target_resolution_dpi: 300             # Resolución objetivo (DPI)
 photos_per_page_min: 6                 # Mínimo de fotos por página
 photos_per_page_max: 10                # Máximo de fotos por página
-max_pages_per_volume: 100              # Máximo de páginas por PDF
+max_pages_per_volume: 200              # Máximo de páginas por PDF
 default_background_color: "#0000FF"    # Color de fondo por defecto (RGB hex)
 typography_system_font: "Helvetica"    # Tipografía para títulos
 ```
@@ -125,14 +127,21 @@ source .venv/bin/activate
 
 Escanea un directorio de fotos, crea la estructura de páginas y genera los archivos YAML de estado.
 
+Puedes usar el comando directo o el script simplificado:
+
+**Comando directo:**
 ```bash
 python make_album.py --init /ruta/a/mis_fotos
 ```
 
-**Ejemplo:**
-
+**Script simplificado:**
 ```bash
-python make_album.py --init ~/Fotos/viaje_italia
+./init_album.sh /ruta/a/mis_fotos
+```
+
+**Ejemplo:**
+```bash
+./init_album.sh ~/Fotos/viaje_italia
 ```
 
 Esto genera el workspace `~/Fotos/viaje_italia_album/` con la siguiente estructura:
@@ -174,15 +183,45 @@ El `layout_mode` y `layout_seed` de las páginas existentes se conservan durante
 
 Lee el estado actual del workspace, reconcilia cambios, rebalancea si es necesario, y genera el PDF final.
 
+Puedes usar el comando directo o el script simplificado:
+
+**Comando directo:**
 ```bash
 python make_album.py --render /ruta/al/workspace
 ```
 
-**Ejemplo:**
-
+**Script simplificado:**
 ```bash
-python make_album.py --render ~/Fotos/viaje_italia_album
+./render_album.sh /ruta/al/workspace
 ```
+
+**Ejemplo:**
+```bash
+./render_album.sh ~/Fotos/viaje_italia_album
+```
+
+#### Renderizado parcial (rango de páginas)
+
+Puedes renderizar solo un rango específico de páginas usando los parámetros `--from` y `--to`. La numeración visual es: `0` = portada, `1, 2, 3...` = páginas de contenido, última = contraportada.
+
+**Comando directo:**
+```bash
+python make_album.py --render /ruta/al/workspace --from 5 --to 10
+```
+
+**Ejemplos:**
+```bash
+# Renderizar solo la portada
+python make_album.py --render ~/Fotos/viaje_italia_album --from 0 --to 0
+
+# Renderizar páginas de contenido 10 a 20
+python make_album.py --render ~/Fotos/viaje_italia_album --from 10 --to 20
+
+# Renderizar desde la página 15 hasta el final
+python make_album.py --render ~/Fotos/viaje_italia_album --from 15
+```
+
+**Nota:** Los parámetros `--from` y `--to` son opcionales y solo válidos con `--render`.
 
 El PDF se genera en la raíz del workspace:
 
@@ -195,7 +234,7 @@ viaje_italia_album/
 └── …
 ```
 
-Si el álbum excede `max_pages_per_volume` (por defecto 100), se generan múltiples volúmenes:
+Si el álbum excede `max_pages_per_volume` (por defecto 200), se generan múltiples volúmenes:
 
 ```
 viaje_italia_Vol1.pdf
@@ -211,9 +250,11 @@ page_size: A4
 target_resolution_dpi: 300
 photos_per_page_min: 6
 photos_per_page_max: 10
-max_pages_per_volume: 100
+max_pages_per_volume: 200
 default_background_color: '#0000FF'
 typography_system_font: Helvetica
+weight_destacada: 1.5
+weight_protagonista: 2.5
 project_title: Viaje italia
 date_range: 09/01/2026 - 15/03/2026
 ```
@@ -227,6 +268,8 @@ date_range: 09/01/2026 - 15/03/2026
 | `max_pages_per_volume` | Páginas máximas antes de dividir en volúmenes |
 | `default_background_color` | Color de fondo por defecto (hex) |
 | `typography_system_font` | Fuente del sistema para textos |
+| `weight_destacada` | Multiplicador para fotos destacadas (1.5x) |
+| `weight_protagonista` | Multiplicador para fotos protagonistas (2.5x) |
 | `project_title` | Título del álbum (se deriva automáticamente del nombre del directorio de origen) |
 | `date_range` | Rango de fechas del álbum (calculado automáticamente, aparece en portada) |
 
@@ -242,6 +285,8 @@ is_backcover: false
 layout_mode: hibrido
 section_titles:
   - "09/01/2026 - Roma"
+featured_photos: [img_003.jpg, img_007.jpg]
+hero_photos: [img_001.jpg]
 ```
 
 | Parámetro | Descripción |
@@ -253,6 +298,8 @@ section_titles:
 | `is_cover` / `is_backcover` | Flags para portada/contraportada |
 | `layout_mode` | Modo de layout: `mesa_de_luz`, `grid_compacto`, o `hibrido` (se asigna aleatoriamente, editable) |
 | `section_titles` | Lista de títulos de sección con fecha (formato: `DD/MM/YYYY - Nombre`) |
+| `featured_photos` | Fotos "destacadas" (1.5x): ocupan más espacio en la página (opcional) |
+| `hero_photos` | Fotos "protagonistas" (2.5x): ocupan el máximo espacio posible (opcional) |
 
 ## Modos de layout
 
@@ -265,6 +312,39 @@ Cada página puede tener uno de tres modos de layout configurables en su `page_c
 | `hibrido` | ±1.5° | 1% | Sí | 95% | Balance entre compacto y estético |
 
 Durante `--init`, se asigna un modo aleatorio a cada página. Puedes editarlo manualmente en el YAML antes de ejecutar `--render`.
+
+## Sistema de pesos para fotos destacadas
+
+Puedes marcar fotos específicas dentro de una página para que se rendericen más grandes que el resto. Esto se configura manualmente en el `page_config.yaml` de la página después de ejecutar `--init`.
+
+### Niveles de peso
+
+| Nivel | Lista YAML | Multiplicador | Efecto |
+|---|---|---|---|
+| Normal | (por defecto) | 1.0x | Tamaño estándar |
+| Destacada | `featured_photos` | 1.5x | ~50% más grande |
+| Protagonista | `hero_photos` | 2.5x | ~150% más grande |
+
+### Cómo funciona
+
+El algoritmo de layout trata las fotos con peso como si ocuparan "varios slots" durante la distribución en filas. Esto hace que las fotos con peso terminen en filas con menos vecinas, lo que aumenta la altura de esa fila y por tanto el tamaño de todas las fotos en ella (pero especialmente la foto con peso, que también reclama más ancho proporcional).
+
+### Ejemplo
+
+```yaml
+# page_config.yaml de una página con 8 fotos
+featured_photos: [img_003.jpg, img_007.jpg]  # Destacadas
+hero_photos: [img_001.jpg]                    # Protagonista
+```
+
+**Resultado**: `img_001.jpg` dominará su fila (puede quedar sola o con 1-2 fotos pequeñas). Las fotos `img_003.jpg` y `img_007.jpg` terminarán en filas con menos fotos que el resto. Las demás fotos (`img_002.jpg`, `img_004-006.jpg`, `img_008.jpg`) se distribuyen normalmente.
+
+### Recomendaciones
+
+- **No abuses**: marcar demasiadas fotos con peso anula el efecto visual de destacar.
+- **1-2 protagonistas máximo** por página.
+- **2-3 destacadas** como complemento.
+- Las fotos con peso funcionan mejor en layouts `mesa_de_luz` o `hibrido` donde la variación de tamaños es más natural.
 
 ## Agrupación por carpetas
 
@@ -300,14 +380,17 @@ La cascada se propaga solo dentro de las páginas del mismo grupo (nunca mezcla 
 | Acción | Comando | Directorio de trabajo |
 |---|---|---|
 | Activar entorno | `source .venv/bin/activate` | `~/Coding/Local_PDF_Album_Generator/` |
-| Crear workspace | `python make_album.py --init /ruta/fotos` | `~/Coding/Local_PDF_Album_Generator/` |
-| Generar PDF | `python make_album.py --render /ruta/workspace` | `~/Coding/Local_PDF_Album_Generator/` |
+| Crear workspace | `./init_album.sh /ruta/fotos` | `~/Coding/Local_PDF_Album_Generator/` |
+| Generar PDF | `./render_album.sh /ruta/workspace` | `~/Coding/Local_PDF_Album_Generator/` |
+| Guardar en Git | `git add . && git commit -m "msg" && git push` | `~/Coding/Local_PDF_Album_Generator/` |
 
 ## Estructura del código fuente
 
 ```
 Local_PDF_Album_Generator/
 ├── make_album.py               # Entry point CLI
+├── init_album.sh               # Script simplificado para Fase 1
+├── render_album.sh             # Script simplificado para Fase 2
 ├── requirements.txt            # Dependencias Python
 ├── README.md
 ├── .venv/                      # Entorno virtual (no commitear)
@@ -393,6 +476,7 @@ git commit -m "Initial commit: Local PDF Album Generator"
 ```bash
 git add .
 git commit -m "Descripción de los cambios"
+git push origin HEAD
 ```
 
 ### Añadir repositorio remoto (opcional)
@@ -401,6 +485,15 @@ git commit -m "Descripción de los cambios"
 git remote add origin <URL_DEL_REPOSITORIO>
 git push -u origin main
 ```
+
+## Rutas de ejecución simplificadas
+
+Los scripts `.sh` permiten ejecutar el programa sin activar manualmente el entorno virtual cada vez (aunque debe estar creado):
+
+- **Fase 1 (Init):** `./init_album.sh /ruta/a/fotos`
+- **Fase 2 (Render):** `./render_album.sh /ruta/a/workspace_album`
+
+Ambos scripts deben ejecutarse desde la raíz del proyecto: `~/Coding/Local_PDF_Album_Generator/`.
 
 ## Licencia
 
