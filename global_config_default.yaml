@@ -16,6 +16,8 @@ photos_per_page_min: 6
 photos_per_page_max: 10
 
 # Maximum pages per PDF volume (for splitting large albums)
+# IMPORTANT: Peecho printing requires 24-500 pages per book
+# Recommended maximum: 498 (to allow for cover + backcover)
 max_pages_per_volume: 200
 
 # Default background color (RGB hex format)

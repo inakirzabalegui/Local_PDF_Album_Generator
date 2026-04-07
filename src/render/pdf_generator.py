@@ -54,6 +54,13 @@ def generate_album(
     # Register fonts with UTF-8 support
     _register_fonts()
     
+    # Peecho printing validation: 500-page maximum (498 content + cover + backcover)
+    if cfg.max_pages_per_volume > 498:
+        logger.warning(
+            f"max_pages_per_volume ({cfg.max_pages_per_volume}) exceeds Peecho's 500-page limit. "
+            f"Recommended maximum: 498 pages (to allow for cover + backcover)."
+        )
+    
     content_pages = [p for p in pages if not p.is_cover and not p.is_backcover]
     cover = next((p for p in pages if p.is_cover), None)
     backcover = next((p for p in pages if p.is_backcover), None)
@@ -86,6 +93,33 @@ def generate_album(
             print(f"\r[render]   Página {i}/{total} ...", end="", flush=True)
             _render_content_page(c, page_cfg, cfg)
         print()
+
+        # Peecho compliance: Ensure minimum 24 pages and even page count
+        pages_written = (1 if cover and vol_idx == 0 else 0) + len(vol_pages)
+        has_backcover_in_volume = backcover and vol_idx == len(volumes) - 1
+        
+        if has_backcover_in_volume:
+            pages_written += 1  # Count the backcover
+        
+        # Minimum 24 pages padding (Peecho requirement: 24-500 pages)
+        if pages_written < 24:
+            blank_pages_needed = 24 - pages_written
+            logger.warning(
+                f"Volume has only {pages_written} pages. Peecho requires minimum 24 pages. "
+                f"Adding {blank_pages_needed} blank page(s)."
+            )
+            for _ in range(blank_pages_needed):
+                c.setFillColor(white)
+                c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
+                c.showPage()
+            pages_written = 24
+        
+        # Even page count padding (Peecho requirement: even number of pages)
+        if pages_written % 2 != 0:
+            logger.info("Inserting blank page to ensure even page count (Peecho requirement)")
+            c.setFillColor(white)
+            c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
+            c.showPage()
 
         if backcover and vol_idx == len(volumes) - 1:
             images = backcover.image_files()
@@ -187,7 +221,7 @@ def _draw_page_number(
     c.setFont(font_name, font_size)
     
     text = str(page_number)
-    margin = 20  # 20pt from edge
+    margin = 30  # 10mm minimum margin required by Peecho printing specs
     x = PAGE_W - margin - c.stringWidth(text, font_name, font_size)
     y = margin
     
@@ -274,7 +308,11 @@ def _split_volumes(
     pages: list[PageConfig],
     max_per_volume: int,
 ) -> list[list[PageConfig]]:
-    """Split content pages into volume-sized chunks."""
+    """Split content pages into volume-sized chunks.
+    
+    Note: Peecho printing requires 24-500 pages per book. The max_per_volume
+    setting should not exceed 498 (500 minus cover and backcover).
+    """
     if not pages:
         return [[]]
     volumes: list[list[PageConfig]] = []

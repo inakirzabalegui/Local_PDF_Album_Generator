@@ -51,6 +51,9 @@ def _draw_title_overlay(
 ) -> None:
     """Draw two bands: thick band with title (top third) and thin band with dates (bottom third)."""
     canvas.saveState()
+    
+    # 10mm minimum margin required by Peecho printing specs
+    SAFE_MARGIN = 29
 
     thick_bar_h = 3.0 * cm
     thick_bar_y = PAGE_H * 0.70
@@ -63,6 +66,8 @@ def _draw_title_overlay(
     canvas.setFont(font_name, font_size_title)
     text_w = canvas.stringWidth(title, font_name, font_size_title)
     x = (PAGE_W - text_w) / 2
+    # Ensure title respects minimum margin (for very long titles)
+    x = max(SAFE_MARGIN, min(x, PAGE_W - SAFE_MARGIN - text_w))
     y = thick_bar_y + (thick_bar_h - font_size_title) / 2 + 6
     canvas.drawString(x, y, title)
 
@@ -78,6 +83,8 @@ def _draw_title_overlay(
         canvas.setFont(font_name, font_size_date)
         text_w_date = canvas.stringWidth(date_range, font_name, font_size_date)
         x_date = (PAGE_W - text_w_date) / 2
+        # Ensure date respects minimum margin
+        x_date = max(SAFE_MARGIN, min(x_date, PAGE_W - SAFE_MARGIN - text_w_date))
         y_date = thin_bar_y + (thin_bar_h - font_size_date) / 2 + 2
         canvas.drawString(x_date, y_date, date_range)
 

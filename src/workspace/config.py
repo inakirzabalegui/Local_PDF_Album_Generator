@@ -40,6 +40,8 @@ photos_per_page_max: {photos_per_page_max}
 
 # Máximo de páginas por volumen PDF antes de dividir en múltiples archivos
 # Si el álbum tiene más de N páginas, se generarán Volumen 1, Volumen 2, etc.
+# IMPORTANTE: Peecho (impresión) requiere 24-500 páginas por libro.
+# Recomendado: máximo 498 (para permitir portada + contraportada)
 max_pages_per_volume: {max_pages_per_volume}
 
 # Color de fondo por defecto (formato hex RGB)

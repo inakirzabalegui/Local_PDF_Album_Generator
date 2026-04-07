@@ -8,7 +8,7 @@ Aplicación CLI local para macOS que automatiza la creación de álbumes fotogr�
 - **Títulos de sección automáticos con fecha**: extrae títulos desde nombres de subcarpetas (formato `YYYYMMDD_Nombre`) y los renderiza como `DD/MM/YYYY - Nombre` en el PDF
 - **Agrupación estricta**: cada subcarpeta genera páginas independientes, nunca se mezclan fotos de dos carpetas en la misma página
 - **Tres modos de layout**: `mesa_de_luz` (rotación +/-3°, jitter), `grid_compacto` (sin rotación, máxima densidad), `hibrido` (rotación sutil +/-1.5°, compacto)
-- **Fotos maximizadas**: 6-10 fotos por página con márgenes mínimos (18pt) y fill factors altos (93-97%)
+- **Fotos maximizadas**: 6-10 fotos por página con márgenes de impresión seguros (29pt / 10mm, compatible con Peecho) y fill factors altos (93-97%)
 - **Sub-banners para subcarpetas hijas**: si una carpeta de sección contiene subcarpetas (1 nivel), se muestra un banner secundario más pequeño en la primera página donde aparecen esas fotos
 - **Ordenación cronológica** por metadatos EXIF `DateTimeOriginal`, con fallback inteligente por fecha de carpeta
 - **Downsampling optimizado** a 300 DPI con calidad 85% + redimensionado dinámico en PDF para minimizar el peso
@@ -486,6 +486,55 @@ El generador aplica múltiples técnicas de optimización para mantener el peso 
 3. **ColorThief optimizado** con miniaturas de 150x150px para análisis de color rápido
 
 Con estas optimizaciones, un álbum de 100 páginas (~600 fotos) generalmente pesa entre 300 MB y 1 GB dependiendo del contenido, manteniendo calidad excelente para impresión profesional.
+
+## Compatibilidad con impresión (Peecho)
+
+Los PDFs generados por esta aplicación cumplen con las especificaciones técnicas de **Peecho** para impresión de libros hardcover:
+
+### Especificaciones cumplidas
+
+| Requisito | Implementación |
+|-----------|----------------|
+| **Tamaño de página** | A4 (210 x 297 mm) |
+| **Resolución** | 300 DPI |
+| **Perfil de color** | RGB |
+| **Fuentes** | Embebidas automáticamente (TrueType) |
+| **Márgenes** | 10mm mínimo en todos los lados (contenido y cubiertas) |
+| **Número de páginas** | Par (auto-padding si es necesario) |
+| **Rango de páginas** | 24-500 páginas por volumen |
+| **Orden del PDF** | Portada → Contenido → Contraportada |
+| **Bleed y marcas de corte** | No incluidos (Peecho los genera automáticamente) |
+
+### Validaciones automáticas
+
+Durante el proceso de renderizado (`--render`), la aplicación aplica automáticamente las siguientes correcciones para garantizar compatibilidad con Peecho:
+
+1. **Número par de páginas**: Si el PDF tiene un número impar de páginas, se inserta automáticamente una página en blanco antes de la contraportada.
+
+2. **Mínimo 24 páginas**: Si el álbum tiene menos de 24 páginas totales (portada + contenido + contraportada), se añaden automáticamente páginas en blanco hasta alcanzar el mínimo requerido. Se registra un aviso en el log.
+
+3. **Máximo 500 páginas**: Si `max_pages_per_volume` en `global_config.yaml` excede 498 (500 menos portada y contraportada), se muestra un aviso en el log. El valor por defecto es 200 páginas.
+
+4. **Márgenes de seguridad**: Todos los elementos (fotos, títulos, números de página) respetan un margen mínimo de 10mm desde el borde de la página.
+
+### Limitaciones conocidas
+
+**PDF/X-4**: Peecho recomienda (pero no requiere) el perfil PDF/X-4 (coated FOGRA 39). ReportLab genera PDFs estándar (PDF 1.4) que Peecho acepta sin problemas.
+
+Si necesitas convertir a PDF/X-4, puedes usar Ghostscript como post-procesamiento:
+
+```bash
+gs -dPDFX -dBATCH -dNOPAUSE -sDEVICE=pdfwrite \
+   -sOutputFile=output_x4.pdf input.pdf
+```
+
+### Configuración recomendada para impresión
+
+Para álbumes destinados a impresión profesional con Peecho:
+
+- `max_pages_per_volume`: 200-400 (nunca más de 498)
+- `target_resolution_dpi`: 300 (ya es el valor por defecto)
+- Verifica que tus fotos originales tengan buena resolución (mínimo 2000x1500 px para fotos de página completa)
 
 ## Dependencias
 

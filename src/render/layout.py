@@ -17,7 +17,7 @@ from reportlab.lib.pagesizes import A4
 logger = logging.getLogger("album")
 
 PAGE_W, PAGE_H = A4
-BASE_MARGIN = 18
+BASE_MARGIN = 29  # 10mm minimum margin required by Peecho printing specs
 TITLE_SPACE = 40
 SUBTITLE_SPACE = 38
 BORDER_WIDTH = 4
