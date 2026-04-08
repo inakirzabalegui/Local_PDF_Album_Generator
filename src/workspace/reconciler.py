@@ -45,6 +45,31 @@ def reconcile(
     if not content:
         return pages
 
+    # Check for page number gaps (deleted folders)
+    content.sort(key=lambda p: p.page_number)
+    expected = list(range(1, len(content) + 1))
+    actual = [p.page_number for p in content]
+    
+    if actual != expected:
+        missing = set(expected) - set(actual)
+        if missing:
+            logger.info(
+                f"Detected deleted page(s): {sorted(missing)}. "
+                f"Renumbering {len(content)} pages sequentially (1..{len(content)})"
+            )
+        else:
+            logger.info(
+                f"Detected page number gaps. "
+                f"Renumbering from {actual[0]}..{actual[-1]} to 1..{len(content)}"
+            )
+        
+        for new_num, page in enumerate(content, start=1):
+            page.page_number = new_num
+        
+        _rename_folders(content, workspace)
+        write_page_configs(content)
+        logger.info("Page renumbering complete")
+
     groups = _group_by_section(content)
 
     # Quick check: does any section need work?
