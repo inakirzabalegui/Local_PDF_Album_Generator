@@ -287,6 +287,11 @@ def write_global_config(workspace: Path, cfg: GlobalConfig) -> Path:
     # Format the color as a YAML string (with quotes)
     color_str = f'"{cfg.default_background_color}"'
     
+    # Format project_title with quotes if it's numeric to prevent YAML parsing as int
+    title_str = cfg.project_title
+    if title_str.isdigit():
+        title_str = f'"{title_str}"'
+    
     content = GLOBAL_CONFIG_TEMPLATE.format(
         page_size=cfg.page_size,
         target_resolution_dpi=cfg.target_resolution_dpi,
@@ -297,7 +302,7 @@ def write_global_config(workspace: Path, cfg: GlobalConfig) -> Path:
         typography_system_font=cfg.typography_system_font,
         weight_destacada=cfg.weight_destacada,
         weight_protagonista=cfg.weight_protagonista,
-        project_title=cfg.project_title,
+        project_title=title_str,
         date_range=cfg.date_range,
     )
     
@@ -349,6 +354,11 @@ def read_global_config(workspace: Path) -> GlobalConfig:
     path = workspace / "global_config.yaml"
     with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    
+    # Ensure project_title is always a string (YAML may parse numeric titles as int)
+    if "project_title" in data and not isinstance(data["project_title"], str):
+        data["project_title"] = str(data["project_title"])
+    
     return GlobalConfig(**{k: v for k, v in data.items() if k in GlobalConfig.__dataclass_fields__})
 
 
