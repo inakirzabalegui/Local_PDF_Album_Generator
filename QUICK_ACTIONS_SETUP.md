@@ -496,6 +496,152 @@ done
 
 ---
 
+## Quick Action 4: Editar Álbum (--edit)
+
+Crea una acción para abrir el **editor interactivo** de páginas en una interfaz web.
+
+### Crear la acción
+
+Repite los pasos 1-4 del Quick Action 1, pero en el paso 5, usa este script:
+
+```bash
+#!/bin/zsh
+
+# ============================================================================
+# Quick Action: Editar Álbum (con Terminal visible)
+# Función: Abre el editor interactivo web desde el menú del Finder
+# ============================================================================
+
+REPO_PATH="/Users/jzabalegui/Coding/Local_PDF_Album_Generator"
+
+# Crear script temporal
+TEMP_SCRIPT=$(mktemp)
+
+cat > "$TEMP_SCRIPT" << 'EOF'
+#!/bin/zsh
+
+REPO_PATH="$1"
+FOLDER="$2"
+
+# Validaciones
+if [ ! -d "$REPO_PATH" ]; then
+    echo "❌ Error: Ruta del proyecto no encontrada: $REPO_PATH"
+    exit 1
+fi
+
+if [ ! -f "$REPO_PATH/.venv/bin/activate" ]; then
+    echo "❌ Error: Entorno virtual no encontrado"
+    echo "Ejecuta: cd '$REPO_PATH' && python3.13 -m venv .venv"
+    exit 1
+fi
+
+# Validar que es un workspace válido
+if [ ! -f "$FOLDER/global_config.yaml" ]; then
+    echo "❌ Error: '$FOLDER' no es un workspace válido"
+    echo "   Falta el archivo 'global_config.yaml'"
+    echo ""
+    echo "Ejecuta --init primero para crear el workspace"
+    exit 1
+fi
+
+# Activar entorno virtual
+source "$REPO_PATH/.venv/bin/activate"
+cd "$REPO_PATH"
+
+folder_name=$(basename "$FOLDER")
+echo ""
+echo "📁 Workspace: $folder_name"
+echo "🌐 Abriendo editor interactivo..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "El editor se abrirá en tu navegador."
+echo "Presiona Ctrl+C aquí para detener el servidor."
+echo ""
+
+python3 make_album.py --edit "$FOLDER"
+EOF
+
+chmod +x "$TEMP_SCRIPT"
+
+# Ejecutar en Terminal para cada carpeta
+for folder in "$@"; do
+    osascript << APPLESCRIPT
+        tell application "Terminal"
+            activate
+            do script "bash '$TEMP_SCRIPT' '$REPO_PATH' '$folder'; rm '$TEMP_SCRIPT'"
+        end tell
+APPLESCRIPT
+done
+```
+
+Guarda como: **`Editar Álbum PDF`**
+
+### Cómo usar
+
+1. **En Finder**, navega a la carpeta del workspace del álbum (ej: `Año 2026_album`)
+2. **Clic derecho** en la carpeta → **Quick Actions** → **"Editar Álbum PDF"**
+3. Se abre **Terminal** y automáticamente se lanza el navegador con el editor
+4. **Edita páginas** interactivamente:
+   - Arrastra fotos para reordenarlas
+   - Selecciona y borra fotos
+   - Edita títulos de página
+   - Regenera vista previa
+   - Navega entre páginas con flechas o botones
+5. **Presiona Ctrl+C en Terminal** cuando termines para detener el servidor
+
+### Características del editor web
+
+| Funcionalidad | Descripción |
+|--------------|-------------|
+| **Reordenar fotos** | Drag-and-drop para cambiar el orden, regenera layout automáticamente |
+| **Borrar foto** | Selecciona y borra, layout se ajusta automáticamente |
+| **Borrar página** | Elimina página completa, se renumerará en próximo --render |
+| **Editar título** | Cambia el título de sección que aparece en la página |
+| **Vista previa PDF** | Preview en tiempo real del resultado final |
+| **Navegación** | Botones o teclas de flecha para moverse entre páginas |
+| **Auto-guardado** | Los cambios se guardan automáticamente al realizarlos |
+
+### Atajos de teclado
+
+- `←` / `→` : Navegar entre páginas
+- `Cmd+S` : Guardar cambios (recordatorio, ya están guardados)
+
+### Notas importantes
+
+- **Los cambios son inmediatos**: Cada acción (reordenar, borrar, etc.) se guarda automáticamente en el workspace
+- **Vista previa PDF**: Se regenera automáticamente después de cada cambio
+- **Navegación**: Puedes editar múltiples páginas sin cerrar el editor
+- **Detener servidor**: Presiona `Ctrl+C` en la ventana de Terminal cuando termines
+- **Renumeración**: Si borras páginas, se renumerarán automáticamente en el próximo `--render` del álbum completo
+
+### Solución de problemas
+
+**El navegador no se abre automáticamente:**
+- Copia la URL que aparece en Terminal: `http://localhost:5050`
+- Pégala manualmente en tu navegador
+
+**Error de puerto en uso:**
+- Si el editor se cerró mal, el puerto 5050 puede estar ocupado
+- Busca el proceso: `lsof -ti:5050 | xargs kill -9`
+- O espera 1-2 minutos y prueba de nuevo
+
+**Los cambios no aparecen:**
+- Haz clic en "Regenerar Vista Previa"
+- O refresca el navegador con Cmd+R
+
+---
+
+## Resumen de Quick Actions
+
+| Quick Action | Uso | Input |
+|-------------|-----|-------|
+| **Inicializar Álbum PDF** | Crear workspace a partir de carpeta de fotos | Carpeta de fotos original |
+| **Renderizar Álbum PDF** | Generar PDF completo del álbum | Carpeta workspace (*_album) |
+| **Renderizar Página Única** | Generar PDF de una sola página (debug) | Carpeta de página (pagina_XX_...) |
+| **Editar Álbum PDF** | Editor interactivo web para editar páginas | Carpeta workspace (*_album) |
+
+---
+
 ## Referencias
 
 - [Documentación oficial: Automatizar tareas en macOS](https://support.apple.com/es-es/guide/automator/welcome/mac)

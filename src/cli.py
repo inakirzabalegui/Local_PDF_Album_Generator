@@ -35,6 +35,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "páginas si es necesario y genera el PDF final."
         ),
     )
+    group.add_argument(
+        "--edit",
+        metavar="DIRECTORIO_PROYECTO",
+        type=Path,
+        help=(
+            "Modo Editor: abre interfaz web interactiva para editar páginas "
+            "del álbum (reordenar fotos, borrar fotos/páginas, editar títulos)."
+        ),
+    )
 
     parser.add_argument(
         "--from",
@@ -89,6 +98,11 @@ def main(argv: list[str] | None = None) -> None:
             print("Error: --page no puede usarse junto con --from/--to.", file=sys.stderr)
             sys.exit(1)
         _run_render(args.render.resolve(), page_from=args.page_from, page_to=args.page_to, single_page_path=args.page)
+    elif args.edit:
+        if args.page_from is not None or args.page_to is not None or args.page is not None:
+            print("Error: --from, --to y --page solo son válidos con --render.", file=sys.stderr)
+            sys.exit(1)
+        _run_edit(args.edit.resolve())
 
 
 def _run_init(source_dir: Path) -> None:
@@ -276,3 +290,23 @@ def _render_single_page(page_path: Path, global_cfg, logger) -> None:
     
     logger.info(f"PDF generado: {output_path}")
     logger.info("Listo.")
+
+
+def _run_edit(project_dir: Path) -> None:
+    """Launch the interactive page editor."""
+    if not project_dir.is_dir():
+        print(f"Error: '{project_dir}' no es un directorio válido.", file=sys.stderr)
+        sys.exit(1)
+
+    global_yaml = project_dir / "global_config.yaml"
+    if not global_yaml.exists():
+        print(
+            f"Error: no se encontró 'global_config.yaml' en '{project_dir}'.",
+            file=sys.stderr,
+        )
+        print("Este no es un workspace válido. Ejecuta --init primero.", file=sys.stderr)
+        sys.exit(1)
+
+    from src.editor.app import launch_editor
+
+    launch_editor(project_dir)

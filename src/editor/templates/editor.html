@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Editor de Álbum - {{ album_title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/editor.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <h1>{{ album_title }}</h1>
+                <span class="page-indicator">Página <span id="current-page-num">1</span> / <span id="total-pages">{{ total_pages }}</span></span>
+            </div>
+            <div class="header-right">
+                <button id="save-btn" class="btn btn-primary">💾 Guardar</button>
+                <button id="exit-btn" class="btn btn-secondary">✕ Salir</button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <div class="sidebar-section">
+                    <h3>Fotos</h3>
+                    <div id="photo-list" class="photo-list">
+                        <!-- Photos will be loaded here via JavaScript -->
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <button id="delete-photo-btn" class="btn btn-danger btn-block" disabled>
+                        🗑️ Borrar Foto Seleccionada
+                    </button>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>Título de Página</h3>
+                    <input 
+                        type="text" 
+                        id="page-title" 
+                        class="form-input" 
+                        placeholder="Título de la página"
+                    />
+                    <button id="update-title-btn" class="btn btn-secondary btn-block">
+                        ✏️ Actualizar Título
+                    </button>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>Acciones</h3>
+                    <button id="regenerate-btn" class="btn btn-primary btn-block">
+                        🔄 Regenerar Vista Previa
+                    </button>
+                    <button id="delete-page-btn" class="btn btn-danger btn-block">
+                        🗑️ Borrar Página Completa
+                    </button>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>Info</h3>
+                    <div class="info-box">
+                        <p><strong>Modo:</strong> <span id="layout-mode">-</span></p>
+                        <p><strong>Fotos:</strong> <span id="photo-count">0</span></p>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Preview Area -->
+            <main class="preview-area">
+                <div class="preview-container">
+                    <iframe 
+                        id="pdf-preview" 
+                        class="pdf-iframe"
+                        title="Vista previa de página"
+                    ></iframe>
+                </div>
+                <div id="loading-overlay" class="loading-overlay" style="display: none;">
+                    <div class="loading-spinner"></div>
+                    <p>Generando vista previa...</p>
+                </div>
+            </main>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="footer-left">
+                <button id="prev-btn" class="btn btn-nav">← Anterior</button>
+                <button id="next-btn" class="btn btn-nav">Siguiente →</button>
+            </div>
+            <div class="footer-right">
+                <span id="changes-indicator">Cambios: <strong id="changes-count">0</strong> pendientes</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Hidden data from server -->
+    <script>
+        const PAGES_DATA = {{ pages|tojson }};
+        const ALBUM_TITLE = "{{ album_title }}";
+        const TOTAL_PAGES = {{ total_pages }};
+    </script>
+
+    <script src="{{ url_for('static', filename='js/editor.js') }}"></script>
+</body>
+</html>

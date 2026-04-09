@@ -1,0 +1,255 @@
+"""API routes for the interactive editor."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from flask import jsonify, request, send_file, current_app
+
+from src.editor.app import app
+from src.editor.workspace_manager import (
+    load_workspace,
+    reorder_photos,
+    delete_photo,
+    delete_page,
+    update_page_title,
+    generate_preview,
+    get_page_info,
+)
+
+logger = logging.getLogger("album.editor")
+
+
+@app.route('/api/pages', methods=['GET'])
+def api_list_pages():
+    """List all pages with metadata."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        global_cfg, pages = load_workspace(workspace)
+        
+        # Filter content pages only
+        content_pages = [p for p in pages if not p.is_cover and not p.is_backcover]
+        content_pages.sort(key=lambda p: p.page_number)
+        
+        return jsonify({
+            'success': True,
+            'pages': [{
+                'id': p.folder.name,
+                'number': p.page_number,
+                'title': p.section_titles[0] if p.section_titles else f"Page {p.page_number}",
+                'photo_count': p.photo_count,
+                'layout_mode': p.layout_mode,
+            } for p in content_pages]
+        })
+    except Exception as e:
+        logger.error(f"Failed to list pages: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>', methods=['GET'])
+def api_get_page(page_id):
+    """Get specific page details and photos."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
+        
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+        
+        info = get_page_info(page_folder)
+        
+        return jsonify({
+            'success': True,
+            'page': info
+        })
+    except Exception as e:
+        logger.error(f"Failed to get page {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>/reorder', methods=['POST'])
+def api_reorder_photos(page_id):
+    """Reorder photos in a page."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
+        
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+        
+        data = request.get_json()
+        new_order = data.get('order', [])
+        
+        if not new_order:
+            return jsonify({'success': False, 'error': 'No order provided'}), 400
+        
+        success = reorder_photos(page_folder, new_order)
+        
+        if success:
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to reorder photos'}), 500
+            
+    except Exception as e:
+        logger.error(f"Failed to reorder photos in {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>/delete-photo', methods=['DELETE'])
+def api_delete_photo(page_id):
+    """Delete a specific photo from a page."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
+        
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+        
+        data = request.get_json()
+        filename = data.get('filename')
+        
+        if not filename:
+            return jsonify({'success': False, 'error': 'No filename provided'}), 400
+        
+        success = delete_photo(page_folder, filename)
+        
+        if success:
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to delete photo'}), 500
+            
+    except Exception as e:
+        logger.error(f"Failed to delete photo from {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>/delete', methods=['DELETE'])
+def api_delete_page(page_id):
+    """Delete an entire page."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
+        
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+        
+        success = delete_page(workspace, page_folder)
+        
+        if success:
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to delete page'}), 500
+            
+    except Exception as e:
+        logger.error(f"Failed to delete page {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>/title', methods=['PUT'])
+def api_update_title(page_id):
+    """Update page title."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
+        
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+        
+        data = request.get_json()
+        new_titles = data.get('titles', [])
+        
+        if not isinstance(new_titles, list):
+            new_titles = [new_titles] if new_titles else []
+        
+        success = update_page_title(page_folder, new_titles)
+        
+        if success:
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to update title'}), 500
+            
+    except Exception as e:
+        logger.error(f"Failed to update title for {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>/regenerate', methods=['POST'])
+def api_regenerate_page(page_id):
+    """Regenerate page preview PDF."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
+        
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+        
+        global_cfg, _ = load_workspace(workspace)
+        preview_path = generate_preview(page_folder, global_cfg)
+        
+        if preview_path:
+            return jsonify({'success': True, 'preview': str(preview_path)})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to generate preview'}), 500
+            
+    except Exception as e:
+        logger.error(f"Failed to regenerate page {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>/preview', methods=['GET'])
+def api_get_preview(page_id):
+    """Serve the preview PDF for a page."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
+        
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+        
+        # Look for page_XX.pdf in the folder
+        pdf_files = list(page_folder.glob('page_*.pdf'))
+        
+        if not pdf_files:
+            # Generate preview if it doesn't exist
+            global_cfg, _ = load_workspace(workspace)
+            preview_path = generate_preview(page_folder, global_cfg)
+            if not preview_path:
+                return jsonify({'success': False, 'error': 'No preview available'}), 404
+        else:
+            preview_path = pdf_files[0]
+        
+        return send_file(
+            preview_path,
+            mimetype='application/pdf',
+            as_attachment=False,
+            download_name=f'{page_id}_preview.pdf'
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to serve preview for {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/save', methods=['POST'])
+def api_save_changes():
+    """Save all pending changes (placeholder for manual save functionality)."""
+    try:
+        # In the current implementation, changes are immediately persisted
+        # This endpoint is here for future enhancements (e.g., transaction-based edits)
+        return jsonify({'success': True, 'message': 'Changes saved'})
+    except Exception as e:
+        logger.error(f"Failed to save changes: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/discard', methods=['POST'])
+def api_discard_changes():
+    """Discard all pending changes (placeholder for manual save functionality)."""
+    try:
+        # In the current implementation, changes are immediately persisted
+        # This endpoint is here for future enhancements (e.g., transaction-based edits)
+        return jsonify({'success': True, 'message': 'Changes discarded'})
+    except Exception as e:
+        logger.error(f"Failed to discard changes: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500

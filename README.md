@@ -22,6 +22,7 @@ Aplicación CLI local para macOS que automatiza la creación de álbumes fotogr�
 - **Barra de progreso**: indicador visual durante la generación del PDF
 - **Soporte UTF-8 completo**: renderizado correcto de tildes, ñ, y otros caracteres especiales en títulos y textos mediante fuentes TrueType
 - **Renderizado parcial**: opción de generar solo un rango específico de páginas del álbum
+- **Editor interactivo web**: interfaz visual para reordenar fotos (drag-and-drop), borrar elementos, editar títulos y previsualizar cambios en tiempo real
 
 ## Organización por secciones
 
@@ -274,6 +275,41 @@ python make_album.py --render ~/Fotos/viaje_italia_album \
 
 **Nota:** Este modo es ideal para testing. Para el álbum final, usa render normal sin `--page`.
 
+### Fase 3: Editor interactivo (`--edit`)
+
+Abre una interfaz web para editar páginas del álbum de forma interactiva con vista previa en tiempo real.
+
+**Comando:**
+```bash
+python make_album.py --edit /ruta/al/workspace
+```
+
+**Usando el script shell:**
+```bash
+./edit_album.sh ~/Fotos/viaje_italia_album
+```
+
+**Funcionalidades del editor:**
+
+| Acción | Descripción |
+|--------|-------------|
+| **Reordenar fotos** | Drag-and-drop para cambiar el orden, regenera layout automáticamente |
+| **Borrar foto** | Selecciona una foto de la lista y bórrala, el layout se ajusta |
+| **Borrar página** | Elimina página completa del álbum |
+| **Editar título** | Modifica el título de sección que aparece en la página |
+| **Regenerar preview** | Fuerza regeneración del PDF de vista previa |
+| **Navegación** | Botones o flechas de teclado para moverse entre páginas |
+
+**Características:**
+- **Auto-guardado**: Todos los cambios se guardan automáticamente en el workspace
+- **Vista previa PDF**: Preview en tiempo real del resultado final después de cada cambio
+- **Interfaz web**: Se abre automáticamente en tu navegador en `http://localhost:5050`
+- **Multi-página**: Edita cualquier página del álbum sin cerrar el editor
+- **Atajos de teclado**: `←`/`→` para navegar, `Cmd+S` como recordatorio de guardado
+
+**Detener el editor:**
+Presiona `Ctrl+C` en la ventana de Terminal para detener el servidor Flask.
+
 El PDF se genera en la raíz del workspace:
 
 ```
@@ -433,6 +469,7 @@ La cascada se propaga solo dentro de las páginas del mismo grupo (nunca mezcla 
 | Activar entorno | `source .venv/bin/activate` | `~/Coding/Local_PDF_Album_Generator/` |
 | Crear workspace | `./init_album.sh /ruta/fotos` | `~/Coding/Local_PDF_Album_Generator/` |
 | Generar PDF | `./render_album.sh /ruta/workspace` | `~/Coding/Local_PDF_Album_Generator/` |
+| Editor interactivo | `./edit_album.sh /ruta/workspace` | `~/Coding/Local_PDF_Album_Generator/` |
 | Guardar en Git | `git add . && git commit -m "msg" && git push` | `~/Coding/Local_PDF_Album_Generator/` |
 
 ## Estructura del código fuente
@@ -442,6 +479,7 @@ Local_PDF_Album_Generator/
 ├── make_album.py               # Entry point CLI
 ├── init_album.sh               # Script simplificado para Fase 1
 ├── render_album.sh             # Script simplificado para Fase 2
+├── edit_album.sh               # Script simplificado para Fase 3 (editor)
 ├── requirements.txt            # Dependencias Python
 ├── README.md
 ├── .venv/                      # Entorno virtual (no commitear)
@@ -461,6 +499,17 @@ Local_PDF_Album_Generator/
     │   ├── styling.py          # Fondos dinámicos + bordes blancos
     │   ├── covers.py           # Portada/contraportada con bandas de título y fecha
     │   └── pdf_generator.py    # Orquestador ReportLab + optimización de imágenes
+    ├── editor/
+    │   ├── app.py              # Flask server para editor interactivo
+    │   ├── routes.py           # API REST endpoints
+    │   ├── workspace_manager.py # Operaciones de edición (reorder, delete, etc.)
+    │   ├── templates/
+    │   │   └── editor.html     # Interfaz web del editor
+    │   └── static/
+    │       ├── css/
+    │       │   └── editor.css  # Estilos del editor
+    │       └── js/
+    │           └── editor.js   # Lógica frontend + drag-and-drop
     └── utils/
         ├── color.py            # Extracción de color dominante (optimizado)
         ├── naming.py           # Parsing de nombres y fechas de carpetas
@@ -545,6 +594,7 @@ Para álbumes destinados a impresión profesional con Peecho:
 | `colorthief` | Extracción de color dominante de imágenes |
 | `PyYAML` | Parsing de archivos de configuración |
 | `exifread` | Lectura robusta de metadatos EXIF |
+| `Flask` | Servidor web para el editor interactivo de páginas |
 
 ## Git
 
@@ -592,8 +642,9 @@ Los scripts `.sh` permiten ejecutar el programa sin activar manualmente el entor
 
 - **Fase 1 (Init):** `./init_album.sh /ruta/a/fotos`
 - **Fase 2 (Render):** `./render_album.sh /ruta/a/workspace_album`
+- **Fase 3 (Edit):** `./edit_album.sh /ruta/a/workspace_album`
 
-Ambos scripts deben ejecutarse desde la raíz del proyecto: `~/Coding/Local_PDF_Album_Generator/`.
+Todos los scripts deben ejecutarse desde la raíz del proyecto: `~/Coding/Local_PDF_Album_Generator/`.
 
 ## Licencia
 
