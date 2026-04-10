@@ -171,6 +171,27 @@ layout_mode: {layout_mode}
 #
 featured_photos: {featured_photos}
 hero_photos: {hero_photos}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Subtítulos de fotos (captions)
+# ─────────────────────────────────────────────────────────────────────────────
+# Diccionario de subtítulos por nombre de archivo.
+# Los subtítulos se renderizan debajo de cada foto en el PDF.
+#
+# FORMATO:
+#   nombre_archivo.jpg: "Texto del subtítulo"
+#
+# EJEMPLOS:
+#   img_001.jpg: "Atardecer en la playa"
+#   img_003.jpg: "Familia reunida"
+#   img_007.jpg: "Momento especial"
+#
+# IMPORTANTE:
+#   • Los nombres deben coincidir EXACTAMENTE con los archivos
+#   • Usa comillas para el texto del subtítulo
+#   • Deja vacío ({{}}) si no quieres subtítulos
+#
+photo_captions: {photo_captions}
 """
 
 # ── Data models ──────────────────────────────────────────────────────────────
@@ -237,6 +258,7 @@ class PageConfig:
     layout_mode: str = "mesa_de_luz"
     featured_photos: list[str] = field(default_factory=list)
     hero_photos: list[str] = field(default_factory=list)
+    photo_captions: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -250,6 +272,7 @@ class PageConfig:
             "layout_mode": self.layout_mode,
             "featured_photos": self.featured_photos,
             "hero_photos": self.hero_photos,
+            "photo_captions": self.photo_captions,
         }
 
     def image_files(self) -> list[Path]:
@@ -330,6 +353,14 @@ def write_page_configs(page_map: list[PageConfig]) -> None:
         else:
             titles_str = "\n  - " + "\n  - ".join(f'"{t}"' for t in pc.section_titles)
         
+        # Format photo captions as YAML dict
+        if not pc.photo_captions:
+            captions_str = "{}"
+        else:
+            captions_str = "\n" + "\n".join(
+                f'  {k}: "{v}"' for k, v in pc.photo_captions.items()
+            )
+        
         content = PAGE_CONFIG_TEMPLATE.format(
             page_number=pc.page_number,
             photo_count=pc.photo_count,
@@ -341,6 +372,7 @@ def write_page_configs(page_map: list[PageConfig]) -> None:
             layout_mode=pc.layout_mode,
             featured_photos=featured_str,
             hero_photos=hero_str,
+            photo_captions=captions_str,
         )
         
         with open(path, "w", encoding="utf-8") as f:
@@ -395,6 +427,7 @@ def read_page_configs(workspace: Path, global_cfg: GlobalConfig) -> list[PageCon
                 layout_mode=data.get("layout_mode", "mesa_de_luz"),
                 featured_photos=data.get("featured_photos", []),
                 hero_photos=data.get("hero_photos", []),
+                photo_captions=data.get("photo_captions", {}),
             )
         )
 

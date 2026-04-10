@@ -122,6 +122,10 @@ def delete_photo(page_folder: Path, filename: str) -> bool:
             ]
             data['photo_count'] = len(remaining_images)
             
+            # Ensure photo_captions exists so it's not lost on rewrite
+            if 'photo_captions' not in data:
+                data['photo_captions'] = {}
+            
             with open(config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
         
@@ -180,6 +184,10 @@ def update_page_title(page_folder: Path, new_titles: list[str]) -> bool:
             data = yaml.safe_load(f) or {}
         
         data['section_titles'] = new_titles
+        
+        # Ensure photo_captions exists so it's not lost on rewrite
+        if 'photo_captions' not in data:
+            data['photo_captions'] = {}
         
         with open(config_path, 'w', encoding='utf-8') as f:
             yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
@@ -246,6 +254,46 @@ def generate_preview(page_folder: Path, global_cfg: GlobalConfig) -> Path | None
         return None
 
 
+def update_photo_caption(page_folder: Path, filename: str, caption: str) -> bool:
+    """Update caption for a specific photo.
+    
+    Args:
+        page_folder: Path to the page folder
+        filename: Name of the photo file
+        caption: New caption text (empty string to remove)
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        config_path = page_folder / "page_config.yaml"
+        if not config_path.exists():
+            logger.error(f"Config not found: {config_path}")
+            return False
+        
+        with open(config_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f) or {}
+        
+        if 'photo_captions' not in data:
+            data['photo_captions'] = {}
+        
+        if caption.strip():
+            data['photo_captions'][filename] = caption.strip()
+        else:
+            # Remove caption if empty
+            data['photo_captions'].pop(filename, None)
+        
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+        
+        logger.info(f"Updated caption for {filename} in {page_folder.name}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to update caption: {e}")
+        return False
+
+
 def get_page_info(page_folder: Path) -> dict:
     """Get detailed information about a page.
     
@@ -278,6 +326,7 @@ def get_page_info(page_folder: Path) -> dict:
             'layout_mode': data.get('layout_mode', 'mesa_de_luz'),
             'is_cover': data.get('is_cover', False),
             'is_backcover': data.get('is_backcover', False),
+            'photo_captions': data.get('photo_captions', {}),
         }
         
     except Exception as e:

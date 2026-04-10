@@ -128,6 +128,32 @@ def generate_album(
 
         c.save()
         output_paths.append(output)
+    
+    # Clean up per-page preview PDFs after full album render completes
+    logger.info("Cleaning up per-page preview PDFs...")
+    for page in content_pages:
+        for preview_pdf in page.folder.glob("page_*.pdf"):
+            try:
+                preview_pdf.unlink()
+                logger.debug(f"Deleted preview PDF: {preview_pdf}")
+            except Exception as e:
+                logger.warning(f"Failed to delete preview PDF {preview_pdf}: {e}")
+    
+    if cover:
+        for preview_pdf in cover.folder.glob("page_*.pdf"):
+            try:
+                preview_pdf.unlink()
+                logger.debug(f"Deleted cover preview PDF: {preview_pdf}")
+            except Exception as e:
+                logger.warning(f"Failed to delete cover preview PDF {preview_pdf}: {e}")
+    
+    if backcover:
+        for preview_pdf in backcover.folder.glob("page_*.pdf"):
+            try:
+                preview_pdf.unlink()
+                logger.debug(f"Deleted backcover preview PDF: {preview_pdf}")
+            except Exception as e:
+                logger.warning(f"Failed to delete backcover preview PDF {preview_pdf}: {e}")
 
     return output_paths
 
@@ -202,6 +228,11 @@ def _render_content_page(
             c.rect(draw_x, draw_y, photo.w, photo.h, fill=1, stroke=0)
 
         c.restoreState()
+        
+        # Draw caption if exists
+        caption = page_cfg.photo_captions.get(photo.path.name)
+        if caption:
+            _draw_photo_caption(c, photo, caption, "HelveticaUTF8")
 
     # Draw page number
     _draw_page_number(c, page_cfg.page_number, "HelveticaUTF8")
@@ -226,6 +257,56 @@ def _draw_page_number(
     y = margin
     
     c.drawString(x, y, text)
+    c.restoreState()
+
+
+def _draw_photo_caption(
+    c: Canvas,
+    photo: PlacedPhoto,
+    caption: str,
+    font_name: str,
+) -> None:
+    """Draw caption text below a photo.
+    
+    Args:
+        c: ReportLab canvas
+        photo: PlacedPhoto object with position and dimensions
+        caption: Caption text to display
+        font_name: Font to use for caption
+    """
+    if not caption:
+        return
+    
+    c.saveState()
+    
+    # Caption styling
+    font_size = 8
+    text_color = Color(0.3, 0.3, 0.3)  # Dark gray
+    padding = 4  # Small padding below photo
+    
+    c.setFont(font_name, font_size)
+    c.setFillColor(text_color)
+    
+    # Calculate position: centered below photo
+    # Note: photo.y is bottom-left corner in our coordinate system
+    caption_x = photo.x + photo.w / 2
+    caption_y = _flip_y(photo.y) - padding - font_size
+    
+    # Center the text horizontally
+    text_width = c.stringWidth(caption, font_name, font_size)
+    caption_x -= text_width / 2
+    
+    # Ensure caption stays within page bounds
+    margin = 30
+    if caption_x < margin:
+        caption_x = margin
+    elif caption_x + text_width > PAGE_W - margin:
+        caption_x = PAGE_W - margin - text_width
+    
+    # Only draw if caption is visible (not too close to bottom)
+    if caption_y > margin:
+        c.drawString(caption_x, caption_y, caption)
+    
     c.restoreState()
 
 

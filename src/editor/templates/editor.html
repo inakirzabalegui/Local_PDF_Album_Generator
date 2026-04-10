@@ -12,10 +12,20 @@
         <!-- Header -->
         <header class="header">
             <div class="header-left">
+                <button id="prev-btn" class="btn btn-nav">← Anterior</button>
+            </div>
+            <div class="header-center">
                 <h1>{{ album_title }}</h1>
                 <span class="page-indicator">Página <span id="current-page-num">1</span> / <span id="total-pages">{{ total_pages }}</span></span>
             </div>
             <div class="header-right">
+                <button id="next-btn" class="btn btn-nav">Siguiente →</button>
+                <label class="theme-switch" title="Modo oscuro">
+                    <input type="checkbox" id="theme-toggle">
+                    <span class="theme-slider"></span>
+                </label>
+                <button id="debug-btn" class="btn btn-secondary" title="Ver log de depuración">{ }</button>
+                <button id="undo-btn" class="btn btn-secondary" disabled>↶ Deshacer</button>
                 <button id="save-btn" class="btn btn-primary">💾 Guardar</button>
                 <button id="exit-btn" class="btn btn-secondary">✕ Salir</button>
             </div>
@@ -23,6 +33,23 @@
 
         <!-- Main Content -->
         <div class="main-content">
+            <!-- Page Navigator Panel (collapsible, left edge) -->
+            <div id="page-panel" class="page-panel collapsed">
+                <div class="page-panel-topbar">
+                    <button id="page-panel-toggle" class="page-panel-toggle-btn" title="Navegador de páginas">
+                        <span class="hamburger-icon">
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                        </span>
+                    </button>
+                    <span class="page-panel-label">Páginas</span>
+                </div>
+                <div class="page-panel-inner">
+                    <div id="page-list" class="page-list"></div>
+                </div>
+            </div>
+
             <!-- Sidebar -->
             <aside class="sidebar">
                 <div class="sidebar-section">
@@ -48,6 +75,20 @@
                     />
                     <button id="update-title-btn" class="btn btn-secondary btn-block">
                         ✏️ Actualizar Título
+                    </button>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>Subtítulo de Foto</h3>
+                    <textarea 
+                        id="photo-caption" 
+                        class="form-textarea" 
+                        placeholder="Escribe un subtítulo para la foto seleccionada"
+                        rows="3"
+                        disabled
+                    ></textarea>
+                    <button id="update-caption-btn" class="btn btn-secondary btn-block" disabled>
+                        ✏️ Actualizar Subtítulo
                     </button>
                 </div>
 
@@ -85,17 +126,6 @@
                 </div>
             </main>
         </div>
-
-        <!-- Footer -->
-        <footer class="footer">
-            <div class="footer-left">
-                <button id="prev-btn" class="btn btn-nav">← Anterior</button>
-                <button id="next-btn" class="btn btn-nav">Siguiente →</button>
-            </div>
-            <div class="footer-right">
-                <span id="changes-indicator">Cambios: <strong id="changes-count">0</strong> pendientes</span>
-            </div>
-        </footer>
     </div>
 
     <!-- Hidden data from server -->

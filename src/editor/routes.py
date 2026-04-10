@@ -14,6 +14,7 @@ from src.editor.workspace_manager import (
     delete_photo,
     delete_page,
     update_page_title,
+    update_photo_caption,
     generate_preview,
     get_page_info,
 )
@@ -171,6 +172,35 @@ def api_update_title(page_id):
             
     except Exception as e:
         logger.error(f"Failed to update title for {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>/caption', methods=['PUT'])
+def api_update_caption(page_id):
+    """Update caption for a specific photo."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
+        
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+        
+        data = request.get_json()
+        filename = data.get('filename')
+        caption = data.get('caption', '')
+        
+        if not filename:
+            return jsonify({'success': False, 'error': 'No filename provided'}), 400
+        
+        success = update_photo_caption(page_folder, filename, caption)
+        
+        if success:
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to update caption'}), 500
+            
+    except Exception as e:
+        logger.error(f"Failed to update caption for {page_id}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
