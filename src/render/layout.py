@@ -1,6 +1,8 @@
 """Photo layout algorithms with justified row-packing collage style.
 
-Places N photos (6–10) on an A4 canvas using justified rows for optimal space usage.
+Places N photos (1–10) on an A4 canvas using justified rows for optimal space usage.
+Exhaustive partition enumeration ensures the best possible fill for any photo count
+and orientation mix.
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ import logging
 import math
 import random
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 
 from PIL import Image
@@ -115,10 +118,10 @@ def compute_layout(
     for row_eff_ars, row_h in rows:
         row_photos = image_paths[photo_idx : photo_idx + len(row_eff_ars)]
         row_real_ars = aspect_ratios[photo_idx : photo_idx + len(row_eff_ars)]
-        
+
         # Calculate actual row width using REAL aspect ratios
         actual_row_w = sum(ar * row_h for ar in row_real_ars) + BASE_GAP * (len(row_real_ars) - 1)
-        
+
         # Center horizontally
         x_offset = max(0, (usable_w - actual_row_w) / 2)
         current_x = margin_side + x_offset
@@ -129,13 +132,13 @@ def compute_layout(
 
             # Apply rotation
             rotation = rng.uniform(-config["rotation_range"], config["rotation_range"])
-            
+
             # Reduce photo size for rotated photos to prevent bounding box bleed
             # Rotated bounding box is larger: w' = w*cos(θ) + h*sin(θ)
             if abs(rotation) > 0.1:
                 rad = abs(rotation) * math.pi / 180
                 # Reduce by the expansion factor
-                reduction = 1.0 / (math.cos(rad) + (photo_h/photo_w) * math.sin(rad))
+                reduction = 1.0 / (math.cos(rad) + (photo_h / photo_w) * math.sin(rad))
                 reduction = min(reduction, 0.95)  # Max 5% reduction
                 photo_w *= reduction
                 photo_h *= reduction
@@ -177,6 +180,35 @@ def compute_layout(
     return placed
 
 
+def score_photo_set(aspect_ratios: list[float], usable_w: float, usable_h: float, gap: float) -> float:
+    """Score how well a set of photos with given aspect ratios fills a page.
+
+    Tries all possible partitions into 1-4 rows and returns the best fill score (0.0-1.0).
+    """
+    n = len(aspect_ratios)
+    if n == 0:
+        return 0.0
+
+    max_rows = min(n, 4)
+    best_score = -1.0
+
+    for num_rows in range(1, max_rows + 1):
+        for partition_indices in _all_partitions(n, num_rows):
+            row_heights = []
+            for start, end in partition_indices:
+                row_ars = aspect_ratios[start:end]
+                row_h = (usable_w - gap * (len(row_ars) - 1)) / sum(row_ars)
+                row_heights.append(row_h)
+
+            total_h = sum(row_heights) + gap * (num_rows - 1)
+            score = total_h / usable_h if total_h <= usable_h else usable_h / total_h
+
+            if score > best_score:
+                best_score = score
+
+    return best_score
+
+
 def _justified_rows(
     aspect_ratios: list[float],
     usable_w: float,
@@ -185,119 +217,110 @@ def _justified_rows(
     fill_factor: float,
     weights: list[float] | None = None,
 ) -> list[tuple[list[float], float]]:
-    """Pack photos into justified rows using balanced partition.
+    """Pack photos into justified rows using exhaustive partition enumeration.
+
+    Tries every possible way to split photos into 1–4 rows and picks the
+    partition that maximises vertical fill. The fill_factor is applied after
+    selection so each layout mode retains its breathing-room character.
 
     Returns list of (row_aspect_ratios, row_height) tuples.
-    
-    weights: Optional list of weight multipliers (one per photo). Weighted photos
-             claim more space by using effective_ar = ar * weight.
+
+    weights: Optional list of weight multipliers (one per photo). Weighted
+             photos claim more horizontal space by inflating their effective AR.
     """
     n = len(aspect_ratios)
     if n == 0:
         return []
-    
+
     if weights is None:
         weights = [1.0] * n
-    
-    # Single photo: fill most of the page
+
+    # --- Single photo: constrain both axes ---
     if n == 1:
-        row_h = usable_h * fill_factor
+        ar = aspect_ratios[0]
+        # Limit height so that width never exceeds usable_w
+        max_h_from_width = usable_w / ar
+        row_h = min(usable_h, max_h_from_width) * fill_factor
         return [(aspect_ratios, row_h)]
 
     # Use effective ARs for layout calculations (weighted photos appear "wider")
     effective_ars = [ar * w for ar, w in zip(aspect_ratios, weights)]
 
-    # Try different row counts and pick best area coverage.
-    # Key insight: row_h = (usable_w - gaps) / sum(effective_ARs) is the MAX height
-    # that fills width exactly. Never scale UP or photos exceed page width.
-    best_layout = None
-    best_score = -1
-    best_num_rows = 0
-    
+    best_layout: list[tuple[list[float], float]] | None = None
+    best_score = -1.0
+
     max_rows = min(n, 4)
-    min_rows = 2
-    
-    for num_rows in range(min_rows, max_rows + 1):
-        partition = _balanced_partition(effective_ars, num_rows, weights)
-        row_data: list[tuple[list[float], float]] = []
-        
-        for row_eff_ars in partition:
-            row_h = (usable_w - gap * (len(row_eff_ars) - 1)) / sum(row_eff_ars)
-            row_data.append((row_eff_ars, row_h))
-        
-        total_h = sum(h for _, h in row_data) + gap * (num_rows - 1)
-        
-        # Symmetric scoring: measures how close total_h is to usable_h.
-        # Underfill: width=100%, height=partial → area ≈ total_h/usable_h
-        # Overflow (needs compression): height=100%, width=partial → area ≈ usable_h/total_h
-        if total_h <= usable_h:
-            score = total_h / usable_h
-        else:
-            score = usable_h / total_h
-        
-        logger.debug(f"    Trying {num_rows} rows: total_h={total_h:.1f}pt, score={score:.3f}")
-        
-        if score > best_score:
-            best_score = score
-            best_layout = row_data
-            best_num_rows = num_rows
-    
-    logger.debug(f"    Selected {best_num_rows} rows (score={best_score:.3f})")
-    
-    # Post-processing: NEVER scale up. Only compress if overflow.
-    if best_layout:
-        total_h = sum(h for _, h in best_layout) + gap * (len(best_layout) - 1)
-        
-        if total_h > usable_h:
-            scale = usable_h / total_h
-            logger.debug(f"    Compressing to fit: scale={scale:.3f}")
-            best_layout = [(ars, h * scale) for ars, h in best_layout]
-        else:
-            logger.debug(f"    Rows fit naturally ({total_h:.1f}pt / {usable_h:.1f}pt)")
-        
-        for i, (ars, h) in enumerate(best_layout, 1):
-            actual_w = sum(ar * h for ar in ars) + gap * (len(ars) - 1)
-            logger.debug(f"    Row {i}: {len(ars)} photos, h={h:.1f}pt, row_w={actual_w:.1f}pt")
-    
-    return best_layout or []
+
+    for num_rows in range(1, max_rows + 1):
+        for partition_indices in _all_partitions(n, num_rows):
+            row_data: list[tuple[list[float], float]] = []
+
+            for start, end in partition_indices:
+                row_eff_ars = effective_ars[start:end]
+                row_h = (usable_w - gap * (len(row_eff_ars) - 1)) / sum(row_eff_ars)
+                row_data.append((row_eff_ars, row_h))
+
+            total_h = sum(h for _, h in row_data) + gap * (num_rows - 1)
+
+            # Symmetric scoring: 1.0 = perfect fit, <1.0 = under or over fill
+            score = total_h / usable_h if total_h <= usable_h else usable_h / total_h
+
+            logger.debug(
+                f"    {num_rows} rows partition {partition_indices}: "
+                f"total_h={total_h:.1f}pt score={score:.3f}"
+            )
+
+            if score > best_score:
+                best_score = score
+                best_layout = row_data
+
+    logger.debug(f"    Selected layout score={best_score:.3f}")
+
+    if not best_layout:
+        return []
+
+    # Apply fill_factor: scale down if over usable_h, or if under apply breathing room
+    num_rows = len(best_layout)
+    total_h = sum(h for _, h in best_layout) + gap * (num_rows - 1)
+    target_h = usable_h * fill_factor
+
+    if total_h > target_h:
+        scale = target_h / total_h
+        logger.debug(f"    Scaling to fit fill_factor: scale={scale:.3f}")
+        best_layout = [(ars, h * scale) for ars, h in best_layout]
+    elif total_h > usable_h:
+        # Overflow without fill_factor margin: hard-clamp to usable_h
+        scale = usable_h / total_h
+        logger.debug(f"    Hard-clamping overflow: scale={scale:.3f}")
+        best_layout = [(ars, h * scale) for ars, h in best_layout]
+
+    for i, (ars, h) in enumerate(best_layout, 1):
+        actual_w = sum(ar * h for ar in ars) + gap * (len(ars) - 1)
+        logger.debug(f"    Row {i}: {len(ars)} photos, h={h:.1f}pt, row_w={actual_w:.1f}pt")
+
+    return best_layout
 
 
-def _balanced_partition(
-    effective_ars: list[float],
-    num_rows: int,
-    weights: list[float] | None = None,
-) -> list[list[float]]:
-    """Distribute photos across N rows by weight sum.
-    
-    Weighted photos gravitate to rows with fewer neighbors, naturally becoming bigger.
+def _all_partitions(n: int, num_groups: int) -> list[list[tuple[int, int]]]:
+    """Return all ways to split n ordered items into num_groups non-empty groups.
+
+    Each partition is a list of (start, end) index pairs (end is exclusive).
+    Uses combinatorial split-point enumeration: C(n-1, num_groups-1) partitions.
+
+    For n=10, num_groups=4 → C(9,3)=84 partitions. Total across 1–4 groups: ~130.
     """
-    n = len(effective_ars)
-    if weights is None:
-        weights = [1.0] * n
-    
-    total_weight = sum(weights)
-    target_per_row = total_weight / num_rows
-    
-    rows: list[list[float]] = []
-    current_row: list[float] = []
-    current_weight = 0.0
-    idx = 0
-    
-    for i in range(n):
-        current_row.append(effective_ars[i])
-        current_weight += weights[i]
-        
-        # Start new row if we've reached target weight (but not on last row)
-        if current_weight >= target_per_row and len(rows) < num_rows - 1:
-            rows.append(current_row)
-            current_row = []
-            current_weight = 0.0
-    
-    # Add remaining photos to last row
-    if current_row:
-        rows.append(current_row)
-    
-    return rows
+    if num_groups == 1:
+        return [[(0, n)]]
+    if num_groups >= n:
+        # One item per group
+        return [[(i, i + 1) for i in range(n)]]
+
+    result = []
+    for splits in combinations(range(1, n), num_groups - 1):
+        boundaries = [0] + list(splits) + [n]
+        partition = [(boundaries[i], boundaries[i + 1]) for i in range(num_groups)]
+        result.append(partition)
+    return result
 
 
 def _get_aspect_ratio(path: Path) -> float:

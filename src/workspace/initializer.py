@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import math
 import random
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.ingestion.downsampler import downsample_image
+from src.render.layout import score_photo_set, PAGE_W, PAGE_H, BASE_MARGIN, TITLE_SPACE, BASE_GAP
 from src.utils.naming import (
     build_section_title,
     extract_date_from_folder,
@@ -120,7 +122,7 @@ def create_workspace(
     import random as _rnd
 
     for source_group, group_photos in groups_dict.items():
-        chunks = _chunk_photos_no_mix(group_photos, target_per_page, cfg.photos_per_page_min)
+        chunks = _chunk_photos_by_orientation(group_photos, target_per_page, cfg.photos_per_page_min, cfg.photos_per_page_max)
         logger.debug(f"Chunking {source_group}: {len(group_photos)} photos into {len(chunks)} pages")
         
         section_title = build_section_title(source_group)
@@ -192,21 +194,64 @@ def create_workspace(
     return cfg, page_configs
 
 
-def _chunk_photos_no_mix(
+def _chunk_photos_by_orientation(
     photos: list[PhotoInfo],
     target: int,
     minimum: int,
+    maximum: int,
 ) -> list[list[PhotoInfo]]:
-    """Split photos into page-sized chunks WITHOUT mixing with other groups.
-
-    If last chunk < minimum, it stays as is (photos will render larger).
-    """
     if not photos:
         return []
 
+    n = len(photos)
+    if n <= target:
+        return [photos]
+
+    usable_w = PAGE_W - 2 * BASE_MARGIN
+    usable_h = PAGE_H - BASE_MARGIN - BASE_MARGIN - TITLE_SPACE
+
+    ars = [p.width / p.height if p.height else 1.33 for p in photos]
+
+    sorted_indices = sorted(range(n), key=lambda i: ars[i])
+
+    base = math.ceil(n / target)
+    candidates = [base - 1, base, base + 1]
+
+    best_num_pages = base
+    best_total_score = -1.0
+
+    for num_pages in candidates:
+        if num_pages < 1:
+            continue
+        photos_per = n / num_pages
+        if photos_per < minimum or photos_per > maximum:
+            continue
+
+        group_size = n / num_pages
+        total_score = 0.0
+        for g in range(num_pages):
+            start = round(g * group_size)
+            end = round((g + 1) * group_size)
+            group_sorted_indices = sorted_indices[start:end]
+            group_ars = [ars[i] for i in group_sorted_indices]
+            total_score += score_photo_set(group_ars, usable_w, usable_h, BASE_GAP)
+
+        if total_score > best_total_score:
+            best_total_score = total_score
+            best_num_pages = num_pages
+
+    group_size = n / best_num_pages
     chunks: list[list[PhotoInfo]] = []
-    for i in range(0, len(photos), target):
-        chunks.append(photos[i : i + target])
+    for g in range(best_num_pages):
+        start = round(g * group_size)
+        end = round((g + 1) * group_size)
+        group_sorted_indices = sorted_indices[start:end]
+        group_original_order = sorted(group_sorted_indices)
+        chunks.append([photos[i] for i in group_original_order])
+
+    if len(chunks) > 1 and len(chunks[-1]) == 1:
+        last = chunks.pop()
+        chunks[-1].extend(last)
 
     return chunks
 
