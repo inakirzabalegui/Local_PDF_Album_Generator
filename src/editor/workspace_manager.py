@@ -294,6 +294,67 @@ def update_photo_caption(page_folder: Path, filename: str, caption: str) -> bool
         return False
 
 
+def create_page_after(workspace: Path, after_page_number: int) -> dict:
+    """Create a new empty page folder after the specified page number.
+
+    The new folder is given the same page_number as the reference page so that
+    the duplicate-resolution logic in reconciler will insert it right after.
+
+    Args:
+        workspace: Path to the workspace root
+        after_page_number: Page number of the reference page to insert after
+
+    Returns:
+        Dict with the new page info, or empty dict on failure
+    """
+    try:
+        global_cfg = read_global_config(workspace)
+        pages = read_page_configs(workspace, global_cfg)
+
+        # Find the reference page
+        ref_page = next((p for p in pages if p.page_number == after_page_number), None)
+        if ref_page is None:
+            logger.error(f"Reference page {after_page_number} not found")
+            return {}
+
+        # Derive slug from reference folder name
+        import re
+        match = re.match(r'pagina_\d+_(.*)', ref_page.folder.name)
+        slug = match.group(1) if match else "page"
+
+        # Create new folder with same page_number (reconciler handles renumbering)
+        new_folder = workspace / f"pagina_{after_page_number:02d}_{slug}_new"
+        new_folder.mkdir(exist_ok=True)
+
+        # Build a minimal PageConfig inheriting from the reference page
+        from src.workspace.config import PageConfig
+        import random as _random
+        new_page = PageConfig(
+            folder=new_folder,
+            page_number=after_page_number,
+            photo_count=0,
+            layout_seed=_random.randint(0, 2**31),
+            section_titles=list(ref_page.section_titles),
+            layout_mode=ref_page.layout_mode,
+        )
+        write_page_configs([new_page])
+
+        logger.info(f"Created new page folder: {new_folder.name}")
+
+        return {
+            'folder_name': new_folder.name,
+            'page_number': after_page_number,
+            'photo_count': 0,
+            'images': [],
+            'section_titles': list(ref_page.section_titles),
+            'layout_mode': ref_page.layout_mode,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to create page: {e}")
+        return {}
+
+
 def get_page_info(page_folder: Path) -> dict:
     """Get detailed information about a page.
     

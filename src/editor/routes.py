@@ -17,6 +17,7 @@ from src.editor.workspace_manager import (
     update_photo_caption,
     generate_preview,
     get_page_info,
+    create_page_after,
 )
 
 logger = logging.getLogger("album.editor")
@@ -258,6 +259,29 @@ def api_get_preview(page_id):
         
     except Exception as e:
         logger.error(f"Failed to serve preview for {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/pages/create', methods=['POST'])
+def api_create_page():
+    """Create a new empty page folder after the specified page number."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        data = request.get_json()
+        after_page = data.get('after_page')
+
+        if after_page is None:
+            return jsonify({'success': False, 'error': 'No after_page provided'}), 400
+
+        page_info = create_page_after(workspace, int(after_page))
+
+        if page_info:
+            return jsonify({'success': True, 'page': page_info})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to create page'}), 500
+
+    except Exception as e:
+        logger.error(f"Failed to create page: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

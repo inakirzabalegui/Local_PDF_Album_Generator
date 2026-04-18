@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -382,6 +383,32 @@ def write_page_configs(page_map: list[PageConfig]) -> None:
 # ── Readers ──────────────────────────────────────────────────────────────────
 
 
+def _parse_page_number(folder_name: str) -> int:
+    """Extract page number from folder name like 'pagina_05_playa'. Returns 0 if not parseable."""
+    match = re.match(r'pagina_(\d+)', folder_name)
+    return int(match.group(1)) if match else 0
+
+
+def _inherit_from_nearest(existing_pages: list[PageConfig], folder_name: str) -> tuple[list[str], str]:
+    """Inherit section_titles and layout_mode from nearest existing page with similar name slug."""
+    # Try to match by slug (the part after pagina_NN_)
+    match = re.match(r'pagina_\d+_(.*)', folder_name)
+    slug = match.group(1) if match else ""
+
+    if slug and existing_pages:
+        # Find a page whose folder name contains the same slug
+        for page in existing_pages:
+            if page.folder.name.endswith(f"_{slug}") or slug in page.folder.name:
+                return list(page.section_titles), page.layout_mode
+
+    # Fallback: use the last page's settings
+    if existing_pages:
+        last = existing_pages[-1]
+        return list(last.section_titles), last.layout_mode
+
+    return [], "mesa_de_luz"
+
+
 def read_global_config(workspace: Path) -> GlobalConfig:
     path = workspace / "global_config.yaml"
     with open(path, encoding="utf-8") as f:
@@ -403,6 +430,27 @@ def read_page_configs(workspace: Path, global_cfg: GlobalConfig) -> list[PageCon
             continue
         cfg_file = sub / "page_config.yaml"
         if not cfg_file.exists():
+            # Check if folder has images (manually created page)
+            actual_images = sorted(
+                p for p in sub.iterdir()
+                if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
+            )
+            if not actual_images:
+                continue
+
+            # Parse page number from folder name (e.g., "pagina_05_playa" -> 5)
+            page_num = _parse_page_number(sub.name)
+
+            # Find nearest existing page to inherit settings
+            section_titles, layout_mode = _inherit_from_nearest(pages, sub.name)
+
+            pages.append(PageConfig(
+                folder=sub,
+                page_number=page_num,
+                photo_count=len(actual_images),
+                section_titles=section_titles,
+                layout_mode=layout_mode,
+            ))
             continue
 
         with open(cfg_file, encoding="utf-8") as f:

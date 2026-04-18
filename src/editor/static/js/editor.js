@@ -154,6 +154,7 @@ function setupEventListeners() {
     document.getElementById('save-btn').addEventListener('click', () => saveChanges(false));
     document.getElementById('exit-btn').addEventListener('click', exitEditor);
     document.getElementById('regenerate-btn').addEventListener('click', regeneratePreview);
+    document.getElementById('add-page-btn').addEventListener('click', addPageAfterCurrent);
     document.getElementById('delete-photo-btn').addEventListener('click', deleteSelectedPhoto);
     document.getElementById('delete-page-btn').addEventListener('click', deletePage);
     document.getElementById('update-title-btn').addEventListener('click', updatePageTitle);
@@ -434,6 +435,64 @@ async function deleteSelectedPhoto() {
             type: error.constructor.name 
         });
         alert('Error de conexión al borrar foto');
+    }
+}
+
+// Add a new empty page after the current page
+async function addPageAfterCurrent() {
+    const pageNum = PAGES_DATA[currentPageIndex].number;
+
+    log('INFO', 'ADD_PAGE_START', { afterPage: pageNum });
+
+    const confirmed = confirm(
+        `¿Crear una página vacía después de la página ${pageNum}?\n\n` +
+        `Las fotos se podrán mover a ella desde el editor. ` +
+        `La numeración final se actualizará en el próximo render.`
+    );
+
+    if (!confirmed) {
+        log('INFO', 'ADD_PAGE_CANCELLED', {});
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/pages/create', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ after_page: pageNum })
+        });
+
+        log('INFO', 'ADD_PAGE_RESPONSE', { status: response.status, ok: response.ok });
+        const data = await response.json();
+
+        if (data.success) {
+            log('INFO', 'ADD_PAGE_SUCCESS', { folderName: data.page.folder_name });
+
+            // Insert the new page into PAGES_DATA right after the current page
+            const newPageEntry = {
+                id: data.page.folder_name,
+                number: data.page.page_number,
+                title: data.page.section_titles[0] || `Página ${data.page.page_number}`,
+                photo_count: 0,
+                layout_mode: data.page.layout_mode,
+            };
+
+            PAGES_DATA.splice(currentPageIndex + 1, 0, newPageEntry);
+
+            // Rebuild the page panel to reflect the new entry
+            initPagePanel();
+
+            alert(`Página creada: ${data.page.folder_name}.\nLas páginas se renumerarán en el próximo render.`);
+
+            // Navigate to the new page
+            await loadPage(currentPageIndex + 1);
+        } else {
+            log('ERROR', 'ADD_PAGE_FAILED', { error: data.error });
+            alert('Error al crear página: ' + data.error);
+        }
+    } catch (error) {
+        log('ERROR', 'ADD_PAGE_EXCEPTION', { error: error.message, stack: error.stack });
+        alert('Error de conexión al crear página');
     }
 }
 

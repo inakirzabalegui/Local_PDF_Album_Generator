@@ -47,6 +47,10 @@ def reconcile(
 
     # Check for page number gaps (deleted folders)
     content.sort(key=lambda p: p.page_number)
+
+    # Resolve duplicate page numbers (manually created folders)
+    content = _resolve_duplicates(content, workspace)
+
     expected = list(range(1, len(content) + 1))
     actual = [p.page_number for p in content]
     
@@ -118,11 +122,62 @@ def reconcile(
 # ---------------------------------------------------------------------------
 
 
-def _group_by_section(pages: list[PageConfig]) -> dict[str, list[PageConfig]]:
+def _get_creation_time(folder: Path) -> float:
+    """Get folder creation time. Falls back to mtime if birthtime unavailable."""
+    stat = folder.stat()
+    return getattr(stat, 'st_birthtime', stat.st_mtime)
+
+
+def _resolve_duplicates(
+    content: list[PageConfig],
+    workspace: Path,
+) -> list[PageConfig]:
+    """Detect duplicate page_numbers and resolve by insertion order.
+
+    When two folders have the same page_number, the newer one (by filesystem
+    creation date) is inserted after the original. All pages are renumbered.
+    """
+    # Group by page_number
+    by_number: dict[int, list[PageConfig]] = {}
+    for p in content:
+        by_number.setdefault(p.page_number, []).append(p)
+
+    # Check if any duplicates exist
+    has_duplicates = any(len(pages) > 1 for pages in by_number.values())
+    if not has_duplicates:
+        return content
+
+    # For each duplicate set, sort by folder creation time
+    for num, pages in by_number.items():
+        if len(pages) > 1:
+            pages.sort(key=lambda p: _get_creation_time(p.folder))
+            logger.info(
+                f"Detected {len(pages)} folders with page_number {num}. "
+                f"Ordering by creation time."
+            )
+
+    # Build ordered list
+    result: list[PageConfig] = []
+    for num in sorted(by_number.keys()):
+        result.extend(by_number[num])
+
+    # Renumber sequentially
+    for new_num, page in enumerate(result, start=1):
+        page.page_number = new_num
+
+    # Rename folders and write configs
+    _rename_folders(result, workspace)
+    write_page_configs(result)
+    logger.info(f"Duplicate resolution complete: renumbered {len(result)} pages")
+
+    return result
+
+
+def _group_by_section(pages: list[PageConfig]) -> dict[tuple, list[PageConfig]]:
     """Group pages by section_titles, preserving insertion order."""
-    groups: dict[str, list[PageConfig]] = {}
+    groups: dict[tuple, list[PageConfig]] = {}
     for page in pages:
-        key = "|".join(page.section_titles) if page.section_titles else f"_nosec_{page.page_number}"
+        key = tuple(page.section_titles) if page.section_titles else ()
         groups.setdefault(key, []).append(page)
     for group_pages in groups.values():
         group_pages.sort(key=lambda p: p.page_number)
