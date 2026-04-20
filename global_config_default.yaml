@@ -13,7 +13,7 @@ target_resolution_dpi: 300
 photos_per_page_min: 6
 
 # Maximum photos per page (must be <= 10)
-photos_per_page_max: 7
+photos_per_page_max: 9
 
 # Maximum pages per PDF volume (for splitting large albums)
 # IMPORTANT: Peecho printing requires 24-500 pages per book

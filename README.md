@@ -8,7 +8,7 @@ Aplicación CLI local para macOS que automatiza la creación de álbumes fotogr�
 - **Títulos de sección automáticos con fecha**: extrae títulos desde nombres de subcarpetas (formato `YYYYMMDD_Nombre`) y los renderiza como `DD/MM/YYYY - Nombre` en el PDF
 - **Agrupación estricta**: cada subcarpeta genera páginas independientes, nunca se mezclan fotos de dos carpetas en la misma página
 - **Tres modos de layout**: `mesa_de_luz` (rotación +/-3°, jitter), `grid_compacto` (sin rotación, máxima densidad), `hibrido` (rotación sutil +/-1.5°, compacto)
-- **Fotos maximizadas**: 6-10 fotos por página con márgenes de impresión seguros (29pt / 10mm, compatible con Peecho) y fill factors altos (93-97%)
+- **Fotos maximizadas**: 6-9 fotos por página con márgenes de impresión seguros (29pt / 10mm, compatible con Peecho). Algoritmo de layout mejorado que intenta llenar máxima densidad vertical, detecta automáticamente 2×2 para grupos pequeños, soporta fotos en filas y columnas según orientación, y permite fotos destacadas/protagonistas en mosaico.
 - **Sub-banners para subcarpetas hijas**: si una carpeta de sección contiene subcarpetas (1 nivel), se muestra un banner secundario más pequeño en la primera página donde aparecen esas fotos
 - **Ordenación cronológica** por metadatos EXIF `DateTimeOriginal`, con fallback inteligente por fecha de carpeta
 - **Downsampling optimizado** a 300 DPI con calidad 85% + redimensionado dinámico en PDF para minimizar el peso
@@ -106,22 +106,69 @@ git clone <URL_DEL_REPOSITORIO> Local_PDF_Album_Generator
 cd Local_PDF_Album_Generator
 ```
 
-### 2. Crear el entorno virtual
+**Inicializar el repositorio git (si no tienes remoto configurado):**
 
 ```bash
+git config user.name "Your Name"
+git config user.email "your.email@example.com"
+# El repositorio ya tiene .git si fue clonado
+```
+
+### 2. Crear el entorno virtual
+
+Todos los comandos deben ejecutarse con el entorno virtual activado. Usamos `.venv` como convención.
+
+```bash
+# Crear el entorno virtual (una sola vez)
 python3.13 -m venv .venv
+
+# Activar el entorno virtual (cada vez que abras una terminal nueva)
 source .venv/bin/activate
+# En Windows: .venv\Scripts\activate
+```
+
+**Verificar que el entorno está activado:**
+
+```bash
+which python  # Debe mostrar: .../Local_PDF_Album_Generator/.venv/bin/python
+# Si no ves .venv en la ruta, ejecuta: source .venv/bin/activate
 ```
 
 ### 3. Instalar dependencias
 
 ```bash
+# Con el entorno activado:
 pip install -r requirements.txt
+```
+
+### 4. Guardar cambios en git
+
+Después de cambios locales en el código:
+
+```bash
+# Ver estado
+git status
+
+# Agregar cambios
+git add .
+
+# Hacer commit
+git commit -m "Descripción breve del cambio"
+
+# (Opcional) Subir a remoto
+git push origin main
 ```
 
 ## Uso
 
-La aplicación se ejecuta siempre desde la raíz del proyecto (`Local_PDF_Album_Generator/`) con el entorno virtual activado.
+**Importante:** La aplicación se ejecuta siempre desde la raíz del proyecto (`Local_PDF_Album_Generator/`) con el entorno virtual activado.
+
+**Activar entorno si no está activo:**
+
+```bash
+cd ~/Coding/Local_PDF_Album_Generator
+source .venv/bin/activate
+```
 
 ### Nuevo: Modo Aplicación Unificada (`--app`)
 
@@ -179,7 +226,7 @@ Antes de usar la aplicación, puedes editar los parámetros por defecto en el ar
 page_size: "A4"                        # Tamaño de página
 target_resolution_dpi: 300             # Resolución objetivo (DPI)
 photos_per_page_min: 6                 # Mínimo de fotos por página
-photos_per_page_max: 10                # Máximo de fotos por página
+photos_per_page_max: 9                 # Máximo de fotos por página
 max_pages_per_volume: 200              # Máximo de páginas por PDF
 default_background_color: "#0000FF"    # Color de fondo por defecto (RGB hex)
 typography_system_font: "Helvetica"    # Tipografía para títulos
@@ -193,6 +240,22 @@ Cada álbum individual puede sobrescribir estos valores editando su propio `glob
 cd ~/Coding/Local_PDF_Album_Generator
 source .venv/bin/activate
 ```
+
+### Inspeccionar el algoritmo de layout (pruebas)
+
+Para verificar visualmente cómo el nuevo algoritmo de layout maneja diferentes cantidades de fotos, ejecuta el script de vista previa:
+
+```bash
+python scripts/preview_layouts.py
+```
+
+Esto genera un PDF con varias páginas de prueba (`scripts/preview_layouts/layout_previews.pdf`) mostrando cómo se distribuyen 3, 4, 5, 6, 7, 8 y 9 fotos con diferentes orientaciones. Abre el PDF para inspeccionar visualmente si el espaciado y llenado son los deseados.
+
+**Qué esperar:**
+- 3 fotos: Layout compacto (posiblemente 2×2 centrado)
+- 5–6 fotos: 2–3 filas naturales que llenan verticalmente
+- 7–9 fotos: Múltiples filas densas (sin fila única ni espacios grandes)
+- Fotos verticales: Columnas densas o multi-filas según orientaciones
 
 ### Fase 1: Creación del workspace (`--init`)
 
@@ -384,7 +447,7 @@ viaje_italia_Vol2.pdf
 page_size: A4
 target_resolution_dpi: 300
 photos_per_page_min: 6
-photos_per_page_max: 10
+photos_per_page_max: 9
 max_pages_per_volume: 200
 default_background_color: '#0000FF'
 typography_system_font: Helvetica
@@ -399,7 +462,7 @@ date_range: 09/01/2026 - 15/03/2026
 | `page_size` | Tamaño de página (A4) |
 | `target_resolution_dpi` | Resolución objetivo para downsampling |
 | `photos_per_page_min` | Mínimo de fotos por página (6) |
-| `photos_per_page_max` | Máximo de fotos por página (10) |
+| `photos_per_page_max` | Máximo de fotos por página (9) |
 | `max_pages_per_volume` | Páginas máximas antes de dividir en volúmenes |
 | `default_background_color` | Color de fondo por defecto (hex) |
 | `typography_system_font` | Fuente del sistema para textos |
