@@ -1,0 +1,4 @@
+{"sessionId": "01c94f", "hypothesisId": "H4", "location": "app.py:index", "message": "index_route_hit", "data": {"has_workspace": false, "has_source": false, "workspace": "", "source": ""}, "timestamp": 1776630705437}
+{"sessionId": "01c94f", "hypothesisId": "H4", "location": "app.py:index", "message": "index_route_hit", "data": {"has_workspace": false, "has_source": false, "workspace": "", "source": ""}, "timestamp": 1776630705578}
+{"sessionId":"01c94f","location":"i18n.js:DOMContentLoaded","hypothesisId":"H3","message":"i18n_loaded","data":{"lang":"es","keysCount":115,"url":"http://localhost:5050/"},"timestamp":1776630705800}
+{"sessionId":"01c94f","location":"i18n.js:DOMContentLoaded","hypothesisId":"H3","message":"i18n_loaded","data":{"lang":"es","keysCount":115,"url":"http://localhost:5050/app"},"timestamp":1776630712531}

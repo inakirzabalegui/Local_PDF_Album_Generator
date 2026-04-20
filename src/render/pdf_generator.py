@@ -23,23 +23,29 @@ from src.workspace.config import GlobalConfig, PageConfig
 PAGE_W, PAGE_H = A4
 logger = logging.getLogger("album")
 
+# Font name used throughout; updated to fallback if TrueType registration fails
+FONT_NAME = "HelveticaUTF8"
+
 # Flag to track if fonts have been registered
 _FONTS_REGISTERED = False
 
 
 def _register_fonts() -> None:
     """Register TrueType fonts for proper UTF-8 support (tildes, ñ, etc.)."""
-    global _FONTS_REGISTERED
+    global _FONTS_REGISTERED, FONT_NAME
     if _FONTS_REGISTERED:
         return
-    
+
     try:
         # Register Helvetica with UTF-8 support
         pdfmetrics.registerFont(TTFont('HelveticaUTF8', '/System/Library/Fonts/Helvetica.ttc'))
         logger.debug("Registered HelveticaUTF8 font for UTF-8 support")
+        FONT_NAME = "HelveticaUTF8"
         _FONTS_REGISTERED = True
     except Exception as exc:
-        logger.warning(f"Could not register TrueType font: {exc}. Falling back to standard fonts.")
+        logger.warning(f"Could not register TrueType font: {exc}. Falling back to Helvetica.")
+        FONT_NAME = "Helvetica"
+        _FONTS_REGISTERED = True
 
 
 def generate_album(
@@ -81,18 +87,17 @@ def generate_album(
             images = cover.image_files()
             if images:
                 render_cover(
-                    c, 
-                    images[0], 
-                    cfg.project_title, 
-                    cfg.date_range, 
-                    "HelveticaUTF8"
+                    c,
+                    images[0],
+                    cfg.project_title,
+                    cfg.date_range,
+                    FONT_NAME,
                 )
 
         total = len(vol_pages)
         for i, page_cfg in enumerate(vol_pages, 1):
-            print(f"\r[render]   Página {i}/{total} ...", end="", flush=True)
+            logger.info(f"Página {i}/{total} ...")
             _render_content_page(c, page_cfg, cfg)
-        print()
 
         # Peecho compliance: Ensure minimum 24 pages and even page count
         pages_written = (1 if cover and vol_idx == 0 else 0) + len(vol_pages)
@@ -171,7 +176,7 @@ def _render_content_page(
     c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)
 
     if page_cfg.section_titles:
-        _draw_section_titles(c, page_cfg.section_titles, "HelveticaUTF8")
+        _draw_section_titles(c, page_cfg.section_titles, FONT_NAME)
         logger.debug(f"  Section titles: {page_cfg.section_titles}")
 
     images = page_cfg.image_files()
@@ -232,10 +237,10 @@ def _render_content_page(
         # Draw caption if exists
         caption = page_cfg.photo_captions.get(photo.path.name)
         if caption:
-            _draw_photo_caption(c, photo, caption, "HelveticaUTF8")
+            _draw_photo_caption(c, photo, caption, FONT_NAME)
 
     # Draw page number
-    _draw_page_number(c, page_cfg.page_number, "HelveticaUTF8")
+    _draw_page_number(c, page_cfg.page_number, FONT_NAME)
 
     c.showPage()
 

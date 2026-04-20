@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import yaml
 from flask import jsonify, request, send_file, current_app
 
 from src.editor.app import app
@@ -18,6 +19,7 @@ from src.editor.workspace_manager import (
     generate_preview,
     get_page_info,
     create_page_after,
+    move_photos,
 )
 
 logger = logging.getLogger("album.editor")
@@ -98,6 +100,39 @@ def api_reorder_photos(page_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/page/<page_id>/move-photos', methods=['POST'])
+def api_move_photos(page_id):
+    """Move photos from one page to another."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        from_folder = workspace / page_id
+        
+        if not from_folder.exists():
+            return jsonify({'success': False, 'error': 'Source page not found'}), 404
+        
+        data = request.get_json()
+        target_page_id = data.get('target_page_id')
+        filenames = data.get('filenames', [])
+        
+        if not target_page_id or not filenames:
+            return jsonify({'success': False, 'error': 'Missing target_page_id or filenames'}), 400
+        
+        to_folder = workspace / target_page_id
+        if not to_folder.exists():
+            return jsonify({'success': False, 'error': 'Target page not found'}), 404
+        
+        success = move_photos(from_folder, to_folder, filenames)
+        
+        if success:
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to move photos'}), 500
+            
+    except Exception as e:
+        logger.error(f"Failed to move photos to {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/page/<page_id>/delete-photo', methods=['DELETE'])
 def api_delete_photo(page_id):
     """Delete a specific photo from a page."""
@@ -173,6 +208,42 @@ def api_update_title(page_id):
             
     except Exception as e:
         logger.error(f"Failed to update title for {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>/layout-mode', methods=['PUT'])
+def api_update_layout_mode(page_id):
+    """Update page layout mode."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
+        
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+        
+        data = request.get_json()
+        layout_mode = data.get('layout_mode', 'mesa_de_luz')
+        
+        config_path = page_folder / "page_config.yaml"
+        if not config_path.exists():
+            return jsonify({'success': False, 'error': 'Config not found'}), 404
+        
+        with open(config_path, 'r', encoding='utf-8') as f:
+            yaml_data = yaml.safe_load(f) or {}
+        
+        yaml_data['layout_mode'] = layout_mode
+        
+        if 'photo_captions' not in yaml_data:
+            yaml_data['photo_captions'] = {}
+        
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(yaml_data, f, allow_unicode=True, default_flow_style=False)
+        
+        logger.info(f"Updated layout_mode for {page_id} to {layout_mode}")
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        logger.error(f"Failed to update layout mode for {page_id}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

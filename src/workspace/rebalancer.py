@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -11,6 +12,8 @@ from src.workspace.config import (
     VALID_IMAGE_EXTENSIONS,
     write_page_configs,
 )
+
+logger = logging.getLogger("album")
 
 
 def rebalance(
@@ -45,9 +48,9 @@ def rebalance(
         for pc in content:
             pc.photo_count = len(pc.image_files())
         write_page_configs(content)
-        print("[rebalance] Páginas rebalanceadas y YAMLs actualizados.")
+        logger.info("Páginas rebalanceadas y YAMLs actualizados.")
     else:
-        print("[rebalance] No se requieren cambios.")
+        logger.info("No se requieren cambios en el rebalanceo.")
 
     all_pages = special + content
     all_pages.sort(key=lambda p: p.page_number)

@@ -41,7 +41,7 @@ def page_background_color(image_paths: list[Path]) -> tuple[int, int, int]:
     r_sum, g_sum, b_sum = 0, 0, 0
     count = 0
 
-    for path in image_paths:
+    for path in image_paths[:3]:
         try:
             r, g, b = dominant_color(path)
             r_sum += r

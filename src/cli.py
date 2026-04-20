@@ -18,6 +18,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
+        "--app",
+        action="store_true",
+        help=(
+            "Modo Aplicación: abre la interfaz web unificada con pestañas Fuente y Edición. "
+            "Solicita seleccionar una carpeta de fotos al iniciar."
+        ),
+    )
+    group.add_argument(
         "--init",
         metavar="DIRECTORIO_FOTOS",
         type=Path,
@@ -87,7 +95,12 @@ def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.init:
+    if args.app:
+        if args.page_from is not None or args.page_to is not None or args.page is not None:
+            print("Error: --from, --to y --page solo son válidos con --render.", file=sys.stderr)
+            sys.exit(1)
+        _run_app()
+    elif args.init:
         if args.page_from is not None or args.page_to is not None or args.page is not None:
             print("Error: --from, --to y --page solo son válidos con --render.", file=sys.stderr)
             sys.exit(1)
@@ -96,6 +109,16 @@ def main(argv: list[str] | None = None) -> None:
         # Validar que --page y --from/--to sean mutuamente excluyentes
         if args.page is not None and (args.page_from is not None or args.page_to is not None):
             print("Error: --page no puede usarse junto con --from/--to.", file=sys.stderr)
+            sys.exit(1)
+        # Validar valores de --from y --to
+        if args.page_from is not None and args.page_from < 0:
+            print("Error: --from no puede ser negativo.", file=sys.stderr)
+            sys.exit(1)
+        if args.page_to is not None and args.page_to < 0:
+            print("Error: --to no puede ser negativo.", file=sys.stderr)
+            sys.exit(1)
+        if args.page_from is not None and args.page_to is not None and args.page_from > args.page_to:
+            print(f"Error: --from ({args.page_from}) no puede ser mayor que --to ({args.page_to}).", file=sys.stderr)
             sys.exit(1)
         _run_render(args.render.resolve(), page_from=args.page_from, page_to=args.page_to, single_page_path=args.page)
     elif args.edit:
@@ -153,7 +176,13 @@ def _run_init(source_dir: Path) -> None:
     write_global_config(workspace, global_cfg)
     write_page_configs(page_map)
 
-    logger.info(f"Workspace creado con {len(page_map)} página(s).")
+    total_pages = len(page_map)
+    logger.info(f"Workspace creado con {total_pages} página(s).")
+    if total_pages < 24:
+        logger.warning(
+            f"El álbum tiene solo {total_pages} página(s). "
+            f"Peecho requiere un mínimo de 24 páginas — se añadirán páginas en blanco al renderizar."
+        )
     logger.info("Listo. Puedes editar las carpetas y luego ejecutar --render.")
 
 
@@ -310,3 +339,10 @@ def _run_edit(project_dir: Path) -> None:
     from src.editor.app import launch_editor
 
     launch_editor(project_dir)
+
+
+def _run_app() -> None:
+    """Launch the unified app with Fuente and Edición modes."""
+    from src.editor.app import launch_app
+
+    launch_app()

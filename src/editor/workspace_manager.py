@@ -44,6 +44,7 @@ def reorder_photos(page_folder: Path, new_order: list[str]) -> bool:
     Returns:
         True if successful, False otherwise
     """
+    temp_dir = None
     try:
         # Validate all files exist
         for filename in new_order:
@@ -73,6 +74,26 @@ def reorder_photos(page_folder: Path, new_order: list[str]) -> bool:
             final_dst = page_folder / temp_file.name
             shutil.move(str(temp_file), str(final_dst))
         
+        # Remap photo_captions in page_config.yaml to canonical names
+        config_path = page_folder / "page_config.yaml"
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+            
+            old_captions = data.get('photo_captions', {})
+            new_captions = {}
+            
+            for i, original_name in enumerate(new_order):
+                ext = Path(original_name).suffix
+                new_name = f"img_{i+1:03d}{ext}"
+                if original_name in old_captions:
+                    new_captions[new_name] = old_captions[original_name]
+            
+            data['photo_captions'] = new_captions
+            
+            with open(config_path, 'w', encoding='utf-8') as f:
+                yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+        
         # Clean up temp directory
         temp_dir.rmdir()
         
@@ -82,7 +103,7 @@ def reorder_photos(page_folder: Path, new_order: list[str]) -> bool:
     except Exception as e:
         logger.error(f"Failed to reorder photos: {e}")
         # Cleanup on error
-        if temp_dir.exists():
+        if temp_dir is not None and temp_dir.exists():
             for f in temp_dir.iterdir():
                 shutil.move(str(f), str(page_folder / f.name))
             temp_dir.rmdir()
@@ -393,3 +414,103 @@ def get_page_info(page_folder: Path) -> dict:
     except Exception as e:
         logger.error(f"Failed to get page info: {e}")
         return {}
+
+
+def move_photos(from_folder: Path, to_folder: Path, filenames: list[str]) -> bool:
+    """Move photos from one page to another, renaming as needed.
+    
+    Args:
+        from_folder: Source page folder
+        to_folder: Destination page folder
+        filenames: List of filenames to move
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Get current images in destination folder
+        existing_images = sorted(
+            p for p in to_folder.iterdir()
+            if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
+        )
+        next_seq = len(existing_images) + 1
+        
+        # Create temp directory for staging
+        temp_dir = from_folder / "_move_tmp"
+        temp_dir.mkdir(exist_ok=True)
+        
+        # Stage photos in temp folder with new names
+        staged_files = []
+        for filename in filenames:
+            src = from_folder / filename
+            if not src.exists():
+                logger.error(f"File not found: {filename}")
+                return False
+            
+            ext = src.suffix.lower()
+            if ext not in VALID_IMAGE_EXTENSIONS:
+                ext = ".jpg"
+            
+            temp_name = f"img_{next_seq:03d}{ext}"
+            dst_temp = temp_dir / temp_name
+            shutil.move(str(src), str(dst_temp))
+            staged_files.append((dst_temp, to_folder / temp_name))
+            next_seq += 1
+        
+        # Move from temp to final destination
+        for src_temp, dst_final in staged_files:
+            shutil.move(str(src_temp), str(dst_final))
+        
+        # Clean up temp directory
+        temp_dir.rmdir()
+        
+        # Update photo counts in YAML for both pages
+        from_config = from_folder / "page_config.yaml"
+        if from_config.exists():
+            with open(from_config, 'r', encoding='utf-8') as f:
+                from_data = yaml.safe_load(f) or {}
+            
+            remaining_images = [
+                p for p in from_folder.iterdir()
+                if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
+            ]
+            from_data['photo_count'] = len(remaining_images)
+            
+            # Clean up captions for moved photos
+            if 'photo_captions' not in from_data:
+                from_data['photo_captions'] = {}
+            for fn in filenames:
+                from_data['photo_captions'].pop(fn, None)
+            
+            with open(from_config, 'w', encoding='utf-8') as f:
+                yaml.dump(from_data, f, allow_unicode=True, default_flow_style=False)
+        
+        # Update destination page YAML
+        to_config = to_folder / "page_config.yaml"
+        if to_config.exists():
+            with open(to_config, 'r', encoding='utf-8') as f:
+                to_data = yaml.safe_load(f) or {}
+            
+            all_images = [
+                p for p in to_folder.iterdir()
+                if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
+            ]
+            to_data['photo_count'] = len(all_images)
+            
+            if 'photo_captions' not in to_data:
+                to_data['photo_captions'] = {}
+            
+            with open(to_config, 'w', encoding='utf-8') as f:
+                yaml.dump(to_data, f, allow_unicode=True, default_flow_style=False)
+        
+        logger.info(f"Moved {len(filenames)} photos from {from_folder.name} to {to_folder.name}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to move photos: {e}")
+        # Cleanup on error
+        if temp_dir.exists():
+            for f in temp_dir.iterdir():
+                shutil.move(str(f), str(from_folder / f.name))
+            temp_dir.rmdir()
+        return False

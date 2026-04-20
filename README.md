@@ -123,7 +123,55 @@ pip install -r requirements.txt
 
 La aplicación se ejecuta siempre desde la raíz del proyecto (`Local_PDF_Album_Generator/`) con el entorno virtual activado.
 
-### Configuración por defecto
+### Nuevo: Modo Aplicación Unificada (`--app`)
+
+**La forma recomendada de trabajar** es usar el nuevo modo aplicación que integra las funcionalidades de Fuente y Edición en una interfaz unificada:
+
+```bash
+./app_album.sh
+```
+
+O si prefieres el comando directo:
+
+```bash
+python make_album.py --app
+```
+
+Esto abre una aplicación web con dos pestañas:
+
+1. **Pestaña "Fuente"**: Administra las carpetas de fotos originales
+   - Navega por los eventos (subcarpetas de fotos)
+   - Visualiza fotos directamente desde el disco
+   - Renombra eventos (y renumera automáticamente todas las fotos)
+   - Borra fotos o eventos completos
+   - Regenera el workspace del álbum desde cero
+
+2. **Pestaña "Edición"**: Edita el álbum generado
+   - Reordena fotos dentro de páginas (drag-and-drop)
+   - Mueve fotos entre páginas
+   - Borra fotos o páginas completas
+   - Edita títulos de página
+   - Elige el modo de layout para cada página (`mesa_de_luz`, `grid_compacto`, `hibrido`)
+   - Añade subtítulos a fotos
+   - Visualiza preview en PDF de cada página
+
+**Flujo recomendado:**
+1. Ejecuta `python make_album.py --app` o `./app_album.sh`
+2. Pulsa "Abrir Carpeta" y selecciona tu directorio de fotos
+3. El app detecta si existe workspace `_album` hermano; si no, lo crea
+4. Usa la pestaña "Fuente" para organizar eventos y fotos si es necesario
+5. Usa la pestaña "Edición" para ajustar el álbum visual
+6. Finaliza con `python make_album.py --render /ruta/a/workspace` para generar el PDF final
+
+**Características de persistencia y navegación:**
+
+- **Último álbum recordado**: La aplicación guarda la última carpeta abierta en `localStorage`. Al volver a cargar la launcher, aparecerá un botón "⏱️ Abrir último: [nombre_carpeta]" para reabrirlo rápidamente sin navegar de nuevo por el sistema de ficheros.
+
+- **Cambiar de álbum sin reiniciar**: Desde la interfaz unificada (con las pestañas Fuente/Edición), puedes pulsar el botón "📁 Abrir carpeta" en la esquina superior derecha de la barra de herramientas. Esto te permitirá seleccionar una carpeta diferente sin cerrar la aplicación. Si hay cambios pendientes, te pedirá confirmación antes de descartar.
+
+- **Limpieza de servidor al reiniciar**: El script `./app_album.sh` mata automáticamente cualquier proceso anterior escuchando en puerto 5050 antes de iniciar el servidor Flask, evitando conflictos de puerto y asegurando que siempre cargas la versión más actual del código.
+
+### Modo Configuración por defecto
 
 Antes de usar la aplicación, puedes editar los parámetros por defecto en el archivo [`global_config_default.yaml`](global_config_default.yaml) en la raíz del proyecto. Estos parámetros se aplicarán a **todos los nuevos** álbumes creados con `--init`:
 
@@ -305,7 +353,7 @@ python make_album.py --edit /ruta/al/workspace
 - **Vista previa PDF**: Preview en tiempo real del resultado final después de cada cambio
 - **Interfaz web**: Se abre automáticamente en tu navegador en `http://localhost:5050`
 - **Multi-página**: Edita cualquier página del álbum sin cerrar el editor
-- **Atajos de teclado**: `←`/`→` para navegar, `Cmd+S` como recordatorio de guardado
+- **Atajos de teclado**: `←`/`→` para navegar, `Cmd+S` como recordatorio de guardado, `D` para borrar foto seleccionada
 
 **Detener el editor:**
 Presiona `Ctrl+C` en la ventana de Terminal para detener el servidor Flask.
@@ -467,6 +515,8 @@ La cascada se propaga solo dentro de las páginas del mismo grupo (nunca mezcla 
 | Acción | Comando | Directorio de trabajo |
 |---|---|---|
 | Activar entorno | `source .venv/bin/activate` | `~/Coding/Local_PDF_Album_Generator/` |
+| **App unificada** | **`./app_album.sh`** | **`~/Coding/Local_PDF_Album_Generator/`** |
+| **App unificada (directo)** | **`python make_album.py --app`** | **`~/Coding/Local_PDF_Album_Generator/`** |
 | Crear workspace | `./init_album.sh /ruta/fotos` | `~/Coding/Local_PDF_Album_Generator/` |
 | Generar PDF | `./render_album.sh /ruta/workspace` | `~/Coding/Local_PDF_Album_Generator/` |
 | Editor interactivo | `./edit_album.sh /ruta/workspace` | `~/Coding/Local_PDF_Album_Generator/` |
@@ -500,16 +550,24 @@ Local_PDF_Album_Generator/
     │   ├── covers.py           # Portada/contraportada con bandas de título y fecha
     │   └── pdf_generator.py    # Orquestador ReportLab + optimización de imágenes
     ├── editor/
-    │   ├── app.py              # Flask server para editor interactivo
-    │   ├── routes.py           # API REST endpoints
-    │   ├── workspace_manager.py # Operaciones de edición (reorder, delete, etc.)
+    │   ├── app.py              # Flask server (launcher, bootstrap, app mode)
+    │   ├── routes.py           # API REST endpoints (album edition)
+    │   ├── source_routes.py    # API REST endpoints (source mode)
+    │   ├── workspace_manager.py # Operaciones de edición album (reorder, delete, etc.)
+    │   ├── source_manager.py   # Operaciones de fuente (rename, delete, regenerate)
     │   ├── templates/
-    │   │   └── editor.html     # Interfaz web del editor
+    │   │   ├── launcher.html   # Interfaz selector de carpeta
+    │   │   ├── app.html        # Interfaz unificada con tabs Fuente/Edición
+    │   │   └── editor.html     # Editor legado (deprecado)
     │   └── static/
     │       ├── css/
-    │       │   └── editor.css  # Estilos del editor
+    │       │   └── editor.css  # Estilos compartidos (app + editor)
     │       └── js/
-    │           └── editor.js   # Lógica frontend + drag-and-drop
+    │           ├── common.js   # Utilidades comunes (theme, tabs, logging)
+    │           ├── album.js    # Lógica modo Edición (album edition)
+    │           ├── source.js   # Lógica modo Fuente (source management)
+    │           ├── app.js      # Controlador de tabs y bootstrap
+    │           └── editor.js   # Legado (deprecado)
     └── utils/
         ├── color.py            # Extracción de color dominante (optimizado)
         ├── naming.py           # Parsing de nombres y fechas de carpetas
@@ -640,6 +698,7 @@ git push -u origin main
 
 Los scripts `.sh` permiten ejecutar el programa sin activar manualmente el entorno virtual cada vez (aunque debe estar creado):
 
+- **App Unificada (RECOMENDADO):** `./app_album.sh`
 - **Fase 1 (Init):** `./init_album.sh /ruta/a/fotos`
 - **Fase 2 (Render):** `./render_album.sh /ruta/a/workspace_album`
 - **Fase 3 (Edit):** `./edit_album.sh /ruta/a/workspace_album`

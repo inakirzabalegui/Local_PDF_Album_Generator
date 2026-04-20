@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n-title="page.title_app">Álbum PDF - Aplicación Unificada</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/editor.css') }}">
+    <style>
+        .launcher-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', sans-serif;
+        }
+        
+        .launcher-card {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 60px 40px;
+            max-width: 500px;
+            text-align: center;
+        }
+        
+        .launcher-icon {
+            font-size: 64px;
+            margin-bottom: 24px;
+        }
+        
+        .launcher-title {
+            font-size: 32px;
+            font-weight: 700;
+            color: #1a1a1a;
+            margin: 0 0 12px 0;
+        }
+        
+        .launcher-subtitle {
+            font-size: 16px;
+            color: #666;
+            margin: 0 0 40px 0;
+            line-height: 1.5;
+        }
+        
+        .launcher-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 16px 32px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-bottom: 24px;
+            width: 100%;
+        }
+        
+        .launcher-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(102, 126, 234, 0.4);
+        }
+        
+        .launcher-button:active {
+            transform: translateY(0);
+        }
+        
+        .launcher-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .drag-drop-zone {
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            padding: 32px 24px;
+            background: #f9f9f9;
+            transition: all 0.3s;
+            text-align: center;
+            color: #999;
+            font-size: 14px;
+        }
+        
+        .drag-drop-zone.drag-over {
+            border-color: #667eea;
+            background: #f0f4ff;
+            color: #667eea;
+        }
+        
+        .drag-drop-icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+        }
+        
+        .error-message {
+            background: #fee;
+            color: #c33;
+            border-left: 4px solid #c33;
+            padding: 12px 16px;
+            border-radius: 4px;
+            margin-bottom: 24px;
+            font-size: 14px;
+            display: none;
+        }
+        
+        .error-message.visible {
+            display: block;
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(102, 126, 234, 0.2);
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .manual-input-section {
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid #eee;
+        }
+        
+        .manual-label {
+            font-size: 12px;
+            color: #999;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            display: block;
+        }
+        
+        .path-input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            box-sizing: border-box;
+            margin-bottom: 12px;
+            resize: vertical;
+            min-height: 60px;
+        }
+        
+        .path-input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .manual-button {
+            background: #f0f0f0;
+            color: #333;
+            border: 1px solid #ddd;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            width: 100%;
+        }
+        
+        .manual-button:hover {
+            background: #e8e8e8;
+        }
+        
+        .dark-mode .launcher-card {
+            background: #2d2d2d;
+            color: #e0e0e0;
+        }
+        
+        .dark-mode .launcher-title {
+            color: #fff;
+        }
+        
+        .dark-mode .launcher-subtitle {
+            color: #aaa;
+        }
+        
+        .dark-mode .drag-drop-zone {
+            background: #383838;
+            border-color: #444;
+            color: #777;
+        }
+        
+        .dark-mode .drag-drop-zone.drag-over {
+            border-color: #667eea;
+            background: #383838;
+            color: #667eea;
+        }
+        
+        .dark-mode .path-input {
+            background: #383838;
+            border-color: #555;
+            color: #e0e0e0;
+        }
+        
+        .dark-mode .manual-button {
+            background: #383838;
+            color: #e0e0e0;
+            border-color: #555;
+        }
+        
+        .dark-mode .manual-button:hover {
+            background: #454545;
+        }
+    </style>
+</head>
+<body>
+    <div class="launcher-container">
+        <div class="launcher-card">
+            <div class="launcher-icon">📸</div>
+            <h1 class="launcher-title" data-i18n="launcher.title">Álbum PDF</h1>
+            <p class="launcher-subtitle" data-i18n="launcher.subtitle">
+                Crea hermosos álbumes fotográficos en PDF desde tus carpetas de fotos
+            </p>
+            
+            <div class="error-message" id="error-message"></div>
+            
+            <button class="launcher-button" id="open-folder-btn" onclick="pickFolder()" data-i18n="launcher.open_folder">
+                📁 Abrir Carpeta
+            </button>
+            
+            <div id="last-folder-section" style="display: none; margin-bottom: 24px;">
+                <button class="launcher-button" id="open-last-btn" onclick="openLastAlbum()" style="background: linear-gradient(135deg, #764ba2 0%, #667eea 100%); margin-bottom: 12px;" data-i18n="launcher.last_folder">
+                    ⏱️ Abrir último
+                </button>
+            </div>
+            
+            <div class="drag-drop-zone" id="drag-drop-zone">
+                <div class="drag-drop-icon">⬇️</div>
+                <p data-i18n="launcher.drag_drop">O arrastra una carpeta aquí</p>
+                <p style="font-size: 12px; color: #999; margin-top: 8px;" data-i18n="launcher.drag_drop_note">
+                    (Nota: los navegadores no exponen la ruta completa por limitaciones de seguridad)
+                </p>
+            </div>
+            
+            <div class="manual-input-section">
+                <label class="manual-label" data-i18n="launcher.manual_label">O pega la ruta manualmente:</label>
+                <textarea 
+                    class="path-input" 
+                    id="manual-path-input" 
+                    data-i18n-placeholder="launcher.manual_placeholder"
+                    placeholder="/ruta/completa/a/carpeta&#10;Ejemplo: /Users/usuario/Fotos/Vacaciones"
+                ></textarea>
+                <button class="manual-button" onclick="bootstrapFromManualInput()" data-i18n="launcher.use_folder">
+                    Usar esta carpeta
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Internationalization (must load first) -->
+    <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
+    
+    <script>
+        // Initialize theme
+        const checkbox = document.getElementById('theme-toggle');
+        let savedTheme = localStorage.getItem('editorTheme');
+        
+        if (!savedTheme) {
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            savedTheme = prefersDark ? 'dark' : 'light';
+        }
+        
+        if (savedTheme === 'dark') {
+            document.body.classList.add('dark-mode');
+        }
+        
+        // Theme toggle (create floating toggle)
+        const themeToggle = document.createElement('label');
+        themeToggle.className = 'theme-switch';
+        themeToggle.style.position = 'fixed';
+        themeToggle.style.top = '20px';
+        themeToggle.style.right = '20px';
+        themeToggle.style.zIndex = '1000';
+        themeToggle.innerHTML = `
+            <input type="checkbox" id="theme-toggle" ${savedTheme === 'dark' ? 'checked' : ''}>
+            <span class="theme-slider"></span>
+        `;
+        document.body.appendChild(themeToggle);
+        
+        document.getElementById('theme-toggle').addEventListener('change', function() {
+            const isDark = this.checked;
+            if (isDark) {
+                document.body.classList.add('dark-mode');
+            } else {
+                document.body.classList.remove('dark-mode');
+            }
+            localStorage.setItem('editorTheme', isDark ? 'dark' : 'light');
+        });
+        
+        // Drag and drop
+        const dragDropZone = document.getElementById('drag-drop-zone');
+        
+        dragDropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dragDropZone.classList.add('drag-over');
+        });
+        
+        dragDropZone.addEventListener('dragleave', () => {
+            dragDropZone.classList.remove('drag-over');
+        });
+        
+        dragDropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dragDropZone.classList.remove('drag-over');
+            showError(t('launcher.drag_not_allowed'));
+        });
+        
+        function showError(message) {
+            const errorEl = document.getElementById('error-message');
+            errorEl.textContent = message;
+            errorEl.classList.add('visible');
+            setTimeout(() => {
+                errorEl.classList.remove('visible');
+            }, 5000);
+        }
+        
+        async function pickFolder() {
+            const btn = document.getElementById('open-folder-btn');
+            btn.disabled = true;
+            btn.innerHTML = `<span class="loading-spinner"></span>${t('loading.dialog')}`;
+            
+            try {
+                const response = await fetch('/api/pick-folder', { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.success && data.path) {
+                    await bootstrap(data.path);
+                } else {
+                    showError(data.error || t('launcher.dialog_cancelled'));
+                    btn.disabled = false;
+                    btn.textContent = t('launcher.open_folder');
+                }
+            } catch (error) {
+                showError(`${t('launcher.connection_error')}${error.message}`);
+                btn.disabled = false;
+                btn.textContent = t('launcher.open_folder');
+            }
+        }
+        
+        function sanitizePath(raw) {
+            if (!raw) return '';
+            let p = raw.trim();
+            // Strip matching surrounding quotes (single or double)
+            if (p.length >= 2 && (p[0] === '"' || p[0] === "'") && p[p.length - 1] === p[0]) {
+                p = p.slice(1, -1);
+            }
+            // Strip trailing slash (but keep root /)
+            if (p.length > 1 && p.endsWith('/')) p = p.replace(/\/+$/, '');
+            return p.trim();
+        }
+        
+        async function bootstrapFromManualInput() {
+            const raw = document.getElementById('manual-path-input').value;
+            const path = sanitizePath(raw);
+            if (!path) {
+                showError(t('validation.path_required'));
+                return;
+            }
+            document.getElementById('manual-path-input').value = path;
+            await bootstrap(path);
+        }
+        
+        async function bootstrap(sourcePath) {
+            const btnOpen = document.getElementById('open-folder-btn');
+            btnOpen.disabled = true;
+            btnOpen.innerHTML = `<span class="loading-spinner"></span>${t('loading.init')}`;
+            
+            try {
+                const response = await fetch('/api/bootstrap', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ source_path: sourcePath })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Persist the last opened album path
+                    localStorage.setItem('lastAlbumPath', sourcePath);
+                    window.location.href = data.redirect;
+                } else {
+                    showError(data.error || t('launcher.init_error'));
+                    btnOpen.disabled = false;
+                    btnOpen.textContent = t('launcher.open_folder');
+                }
+            } catch (error) {
+                showError(`${t('launcher.connection_error')}${error.message}`);
+                btnOpen.disabled = false;
+                btnOpen.textContent = t('launcher.open_folder');
+            }
+        }
+        
+        function openLastAlbum() {
+            const lastPath = localStorage.getItem('lastAlbumPath');
+            if (lastPath) {
+                bootstrap(lastPath);
+            }
+        }
+        
+        // Initialize UI on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            const lastPath = localStorage.getItem('lastAlbumPath');
+            const lastFolderSection = document.getElementById('last-folder-section');
+            const lastFolderBtn = document.getElementById('open-last-btn');
+            
+            if (lastPath) {
+                // Show the "Open last" button
+                lastFolderSection.style.display = 'block';
+                // Extract and display the folder name
+                const folderName = lastPath.split('/').filter(x => x).pop() || lastPath;
+                lastFolderBtn.textContent = `⏱️ ${t('launcher.last_folder')}: ${folderName}`;
+                // Pre-fill the manual input
+                document.getElementById('manual-path-input').value = lastPath;
+            }
+        });
+    </script>
+</body>
+</html>

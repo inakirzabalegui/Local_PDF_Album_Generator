@@ -50,7 +50,7 @@ def scan_directory(source_dir: Path) -> ScanResult:
     """
     result = ScanResult()
 
-    for path in sorted(source_dir.rglob("*")):
+    for path in source_dir.rglob("*"):
         if not path.is_file():
             continue
         if path.suffix.lower() not in VALID_EXTENSIONS:
