@@ -9,6 +9,7 @@ let currentPhotoOrder = [];
 // Page panel state
 let pagePanelOpen = false;
 let pagePanelFocused = false;
+let photoListFocused = false;
 let pagePanelKeyboardIndex = -1;
 
 // Undo system
@@ -154,7 +155,7 @@ function setupEventListeners() {
     document.getElementById('save-btn').addEventListener('click', () => saveChanges(false));
     document.getElementById('exit-btn').addEventListener('click', exitEditor);
     document.getElementById('regenerate-btn').addEventListener('click', regeneratePreview);
-    document.getElementById('add-page-btn').addEventListener('click', addPageAfterCurrent);
+    document.getElementById('explode-page-btn').addEventListener('click', explodePage);
     document.getElementById('delete-photo-btn').addEventListener('click', deleteSelectedPhoto);
     document.getElementById('delete-page-btn').addEventListener('click', deletePage);
     document.getElementById('update-title-btn').addEventListener('click', updatePageTitle);
@@ -176,20 +177,24 @@ function setupEventListeners() {
 function handleKeyboard(e) {
     // Arrow keys for navigation (only if not in input field)
     if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
-        if (e.key === 'ArrowLeft') {
-            navigatePage(-1);
-        } else if (e.key === 'ArrowRight') {
-            navigatePage(1);
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+            if (pagePanelFocused) {
+                e.preventDefault();
+                focusPhotoList();
+            } else if (photoListFocused) {
+                e.preventDefault();
+                focusPagePanel();
+            }
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
-            if (pagePanelFocused && pagePanelOpen) {
+            if (pagePanelFocused) {
                 navigatePagePanelSelection(-1);
             } else {
                 navigatePhotoSelection(-1);
             }
         } else if (e.key === 'ArrowDown') {
             e.preventDefault();
-            if (pagePanelFocused && pagePanelOpen) {
+            if (pagePanelFocused) {
                 navigatePagePanelSelection(1);
             } else {
                 navigatePhotoSelection(1);
@@ -438,61 +443,57 @@ async function deleteSelectedPhoto() {
     }
 }
 
-// Add a new empty page after the current page
-async function addPageAfterCurrent() {
-    const pageNum = PAGES_DATA[currentPageIndex].number;
+// Split the current page into two: first half stays, second half moves to a new page right after
+async function explodePage() {
+    const page = PAGES_DATA[currentPageIndex];
+    const n = page.photo_count;
+    const stayCount = Math.ceil(n / 2);
+    const moveCount = Math.floor(n / 2);
 
-    log('INFO', 'ADD_PAGE_START', { afterPage: pageNum });
-
-    const confirmed = confirm(
-        `¿Crear una página vacía después de la página ${pageNum}?\n\n` +
-        `Las fotos se podrán mover a ella desde el editor. ` +
-        `La numeración final se actualizará en el próximo render.`
-    );
-
-    if (!confirmed) {
-        log('INFO', 'ADD_PAGE_CANCELLED', {});
+    if (n < 2) {
+        alert('Se necesitan al menos 2 fotos para explotar una página.');
         return;
     }
 
+    const confirmed = confirm(
+        `¿Explotar la página ${page.number} en dos?\n\n` +
+        `• Esta página quedará con ${stayCount} foto${stayCount !== 1 ? 's' : ''} (primera mitad).\n` +
+        `• Se creará una nueva página con ${moveCount} foto${moveCount !== 1 ? 's' : ''} (segunda mitad).\n\n` +
+        `La numeración final se actualizará en el próximo render.`
+    );
+
+    if (!confirmed) return;
+
     try {
-        const response = await fetch('/api/pages/create', {
+        const response = await fetch(`/api/page/${page.id}/explode`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ after_page: pageNum })
         });
 
-        log('INFO', 'ADD_PAGE_RESPONSE', { status: response.status, ok: response.ok });
         const data = await response.json();
 
         if (data.success) {
-            log('INFO', 'ADD_PAGE_SUCCESS', { folderName: data.page.folder_name });
+            // Update current page photo_count in local state
+            PAGES_DATA[currentPageIndex].photo_count = data.original_page.photo_count;
 
-            // Insert the new page into PAGES_DATA right after the current page
-            const newPageEntry = {
-                id: data.page.folder_name,
-                number: data.page.page_number,
-                title: data.page.section_titles[0] || `Página ${data.page.page_number}`,
-                photo_count: 0,
-                layout_mode: data.page.layout_mode,
+            // Insert new page entry right after current
+            const newEntry = {
+                id: data.new_page.id,
+                number: data.new_page.number,
+                title: data.new_page.section_titles[0] || `Página ${data.new_page.number}`,
+                photo_count: data.new_page.photo_count,
+                layout_mode: data.new_page.layout_mode,
             };
+            PAGES_DATA.splice(currentPageIndex + 1, 0, newEntry);
 
-            PAGES_DATA.splice(currentPageIndex + 1, 0, newPageEntry);
-
-            // Rebuild the page panel to reflect the new entry
             initPagePanel();
-
-            alert(`Página creada: ${data.page.folder_name}.\nLas páginas se renumerarán en el próximo render.`);
-
-            // Navigate to the new page
-            await loadPage(currentPageIndex + 1);
+            await loadPage(currentPageIndex);
         } else {
-            log('ERROR', 'ADD_PAGE_FAILED', { error: data.error });
-            alert('Error al crear página: ' + data.error);
+            alert('Error al explotar página: ' + data.error);
         }
     } catch (error) {
-        log('ERROR', 'ADD_PAGE_EXCEPTION', { error: error.message, stack: error.stack });
-        alert('Error de conexión al crear página');
+        console.error('Failed to explode page:', error);
+        alert('Error de conexión al explotar página');
     }
 }
 
@@ -754,10 +755,11 @@ async function updatePhotoCaption() {
 
 // Undo system functions
 function pushUndoState(action, data) {
+    const currentPage = PAGES_DATA && PAGES_DATA[currentPageIndex];
     undoStack.push({
         action: action,
-        pageId: PAGES_DATA[currentPageIndex].id,
-        pageIndex: currentPageIndex,
+        pageId: currentPage ? currentPage.id : null,
+        pageIndex: currentPage ? currentPageIndex : null,
         data: data,
         timestamp: Date.now()
     });
@@ -914,9 +916,16 @@ function initPagePanel() {
     
     // Track mouse focus for keyboard routing
     const panel = document.getElementById('page-panel');
-    panel.addEventListener('mouseenter', () => { pagePanelFocused = true; });
+    panel.addEventListener('mouseenter', () => { pagePanelFocused = true; photoListFocused = false; });
     panel.addEventListener('mouseleave', () => { pagePanelFocused = false; });
-    
+
+    const photoList = document.getElementById('photo-list');
+    if (photoList && !photoList.dataset.focusWired) {
+        photoList.addEventListener('mouseenter', () => { photoListFocused = true; pagePanelFocused = false; });
+        photoList.addEventListener('mouseleave', () => { photoListFocused = false; });
+        photoList.dataset.focusWired = '1';
+    }
+
     log('INFO', 'PAGE_PANEL_INIT', { pages: PAGES_DATA.length });
 }
 
@@ -963,6 +972,39 @@ function updatePagePanelActiveItem(index) {
 function updatePagePanelTitle(index, newTitle) {
     const titleEl = document.getElementById(`page-panel-title-${index}`);
     if (titleEl) titleEl.textContent = newTitle;
+}
+
+function focusPagePanel() {
+    photoListFocused = false;
+    pagePanelFocused = true;
+    document.getElementById('photo-list')?.classList.remove('panel-has-focus');
+    document.getElementById('page-panel')?.classList.add('panel-has-focus');
+
+    if (!pagePanelOpen) togglePagePanel();
+
+    const items = document.querySelectorAll('.page-list-item');
+    items.forEach((item, i) => {
+        item.classList.toggle('keyboard-focus', i === pagePanelKeyboardIndex);
+    });
+    items[pagePanelKeyboardIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function focusPhotoList() {
+    pagePanelFocused = false;
+    photoListFocused = true;
+    document.getElementById('page-panel')?.classList.remove('panel-has-focus');
+    document.getElementById('photo-list')?.classList.add('panel-has-focus');
+
+    const items = document.querySelectorAll('.photo-item');
+    if (items.length === 0) return;
+    const alreadySelected = Array.from(items).find(i => i.classList.contains('selected'));
+    if (alreadySelected) {
+        alreadySelected.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } else {
+        const first = items[0];
+        selectPhoto(first.dataset.filename, first);
+        first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
 }
 
 function navigatePagePanelSelection(delta) {

@@ -9,11 +9,18 @@ let selectedPhotoName = null;
 let sortableInstance = null;
 let currentPageCaptions = {};
 let currentPhotoOrder = [];
+let currentPageSectionTitles = [];
+let currentPageLayoutMode = 'mesa_de_luz';
+// Filenames being dragged for cross-page drops
+let draggingAlbumFilenames = [];
+// Set to true when a cross-page drop is handled so onEnd skips reorder
+let _crossPageDropHandled = false;
 
-// Page panel state
-let pagePanelOpen = false;
+// Page panel state (panel is always visible now; kept flags for keyboard nav)
+let pagePanelOpen = true;
 let pagePanelFocused = false;
 let pagePanelKeyboardIndex = -1;
+let photoListFocused = false;
 
 // Undo system
 const undoStack = [];
@@ -37,18 +44,17 @@ function setupAlbumEventListeners() {
     // Actions
     document.getElementById('save-btn')?.addEventListener('click', () => saveChanges(false));
     document.getElementById('exit-btn')?.addEventListener('click', exitEditor);
-    document.getElementById('regenerate-btn')?.addEventListener('click', regeneratePreview);
-    document.getElementById('add-page-btn')?.addEventListener('click', addPageAfterCurrent);
+    document.getElementById('explode-page-btn')?.addEventListener('click', explodePage);
     document.getElementById('delete-photo-btn')?.addEventListener('click', deleteSelectedPhoto);
     document.getElementById('delete-page-btn')?.addEventListener('click', deletePage);
-    document.getElementById('update-title-btn')?.addEventListener('click', updatePageTitle);
+    document.getElementById('rename-page-btn')?.addEventListener('click', renamePage);
+    document.getElementById('rename-subtitle-btn')?.addEventListener('click', renameSubtitle);
     document.getElementById('update-caption-btn')?.addEventListener('click', updatePhotoCaption);
-    document.getElementById('apply-layout-mode-btn')?.addEventListener('click', updateLayoutMode);
+    document.getElementById('layout-mode-btn')?.addEventListener('click', openLayoutModeModal);
+    document.getElementById('apply-layout-mode-btn')?.addEventListener('click', applyLayoutModeFromModal);
+    document.getElementById('cancel-layout-mode-btn')?.addEventListener('click', closeLayoutModeModal);
     document.getElementById('undo-btn')?.addEventListener('click', performUndo);
-    
-    // Page panel toggle
-    document.getElementById('page-panel-toggle')?.addEventListener('click', togglePagePanel);
-    
+
     // Keyboard shortcuts
     document.addEventListener('keydown', handleAlbumKeyboard);
 }
@@ -59,8 +65,18 @@ function handleAlbumKeyboard(e) {
     
     if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
         if (e.key === 'ArrowLeft') {
+            if (photoListFocused) {
+                e.preventDefault();
+                focusPagePanel();
+                return;
+            }
             navigatePage(-1);
         } else if (e.key === 'ArrowRight') {
+            if (pagePanelFocused) {
+                e.preventDefault();
+                focusPhotoList();
+                return;
+            }
             navigatePage(1);
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
@@ -117,30 +133,25 @@ async function loadPage(index) {
             updatePagePanelActiveItem(index);
         } else {
             log('ERROR', 'LOAD_PAGE_FAILED', { error: data.error });
-            alert(t('error.load_page') + data.error);
+            showToast(t('error.load_page') + data.error, { type: 'error' });
         }
     } catch (error) {
         log('ERROR', 'LOAD_PAGE_EXCEPTION', { error: error.message });
-        alert(t('error.connection_load_page'));
+        showToast(t('error.connection_load_page'), { type: 'error' });
     }
 }
 
 // Render page details in sidebar
 function renderPageDetails(page) {
-    const titleInput = document.getElementById('page-title');
-    titleInput.value = page.section_titles.join(' / ') || '';
-    
+    currentPageSectionTitles = Array.isArray(page.section_titles) ? page.section_titles.slice() : [];
+    currentPageLayoutMode = page.layout_mode || 'mesa_de_luz';
     currentPageCaptions = page.photo_captions || {};
-    
-    // Update layout mode selector
+
     const layoutSelect = document.getElementById('layout-mode-select');
     if (layoutSelect) {
-        layoutSelect.value = page.layout_mode || 'mesa_de_luz';
+        layoutSelect.value = currentPageLayoutMode;
     }
-    
-    document.getElementById('album-layout-mode').textContent = page.layout_mode;
-    document.getElementById('photo-count').textContent = page.photo_count;
-    
+
     const photoList = document.getElementById('photo-list');
     photoList.textContent = '';
     
@@ -173,10 +184,23 @@ function renderPageDetails(page) {
         animation: 150,
         handle: '.drag-handle',
         ghostClass: 'sortable-ghost',
-        onStart: function() {
+        setData(dataTransfer, dragEl) {
+            const filename = dragEl.dataset.filename;
+            const selected = Array.from(photoList.querySelectorAll('.photo-item.selected'))
+                .map(el => el.dataset.filename);
+            draggingAlbumFilenames = selected.includes(filename) ? selected : [filename];
             currentPhotoOrder = getPhotoOrder();
+            dataTransfer.setData('text/plain', JSON.stringify(draggingAlbumFilenames));
         },
-        onEnd: handlePhotoReorder
+        onEnd(evt) {
+            if (_crossPageDropHandled) {
+                _crossPageDropHandled = false;
+                draggingAlbumFilenames = [];
+                return;
+            }
+            draggingAlbumFilenames = [];
+            handlePhotoReorder(evt);
+        },
     });
 }
 
@@ -233,12 +257,12 @@ async function handlePhotoReorder(evt) {
             await regeneratePreview();
         } else {
             log('ERROR', 'REORDER_FAILED', { error: data.error });
-            alert(t('error.reorder_photos') + data.error);
+            showToast(t('error.reorder_photos') + data.error, { type: 'error' });
             await loadPage(currentPageIndex);
         }
     } catch (error) {
         log('ERROR', 'REORDER_EXCEPTION', { error: error.message });
-        alert(t('error.connection_reorder'));
+        showToast(t('error.connection_reorder'), { type: 'error' });
         await loadPage(currentPageIndex);
     }
 }
@@ -259,14 +283,21 @@ async function deleteSelectedPhoto() {
     const pageId = PAGES_DATA[currentPageIndex].id;
     log('INFO', 'DELETE_PHOTO_START', { filename: selectedPhotoName });
     
-    const confirmed = confirm(t('confirm.delete_photo', { name: selectedPhotoName }));
-    
+    const confirmed = await showConfirm({
+        title: 'Borrar foto',
+        message: t('confirm.delete_photo', { name: selectedPhotoName }),
+        danger: true
+    });
+
     if (!confirmed) {
         log('INFO', 'DELETE_PHOTO_CANCELLED', {});
         return;
     }
     
     try {
+        // #region agent log
+        fetch('http://127.0.0.1:7583/ingest/f99a3167-114d-4776-a87f-6f247420d0df',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'02279c'},body:JSON.stringify({sessionId:'02279c',location:'album.js:deleteSelectedPhoto',message:'delete album photo request',data:{pageId:pageId,filename:selectedPhotoName},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         const response = await fetch(`/api/page/${pageId}/delete-photo`, {
             method: 'DELETE',
             headers: {'Content-Type': 'application/json'},
@@ -275,79 +306,94 @@ async function deleteSelectedPhoto() {
         
         const data = await response.json();
         
+        // #region agent log
+        fetch('http://127.0.0.1:7583/ingest/f99a3167-114d-4776-a87f-6f247420d0df',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'02279c'},body:JSON.stringify({sessionId:'02279c',location:'album.js:deleteSelectedPhoto',message:'delete album photo response',data:{status:response.status,success:data.success,error:data.error||null},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        
         if (data.success) {
-            log('INFO', 'DELETE_PHOTO_SUCCESS', {});
+            log('INFO', 'DELETE_PHOTO_SUCCESS', { trash_token: data.trash_token });
+            if (data.trash_token) {
+                pushUndoState('delete_photo', {
+                    filename: selectedPhotoName,
+                    trash_token: data.trash_token,
+                });
+            }
             selectedPhotoName = null;
             document.getElementById('delete-photo-btn').disabled = true;
-            
+
             const captionTextarea = document.getElementById('photo-caption');
             if (captionTextarea) {
                 captionTextarea.disabled = true;
                 captionTextarea.value = '';
             }
-            
+
             const captionBtn = document.getElementById('update-caption-btn');
             if (captionBtn) captionBtn.disabled = true;
-            
+
             incrementPendingChanges();
             await loadPage(currentPageIndex);
             await regeneratePreview();
         } else {
             log('ERROR', 'DELETE_PHOTO_FAILED', { error: data.error });
-            alert(t('error.delete_photo') + data.error);
+            showToast(t('error.delete_photo') + data.error, { type: 'error' });
         }
     } catch (error) {
         log('ERROR', 'DELETE_PHOTO_EXCEPTION', { error: error.message });
-        alert(t('error.connection_delete_photo'));
+        showToast(t('error.connection_delete_photo'), { type: 'error' });
     }
 }
 
-// Add a new empty page after the current page
-async function addPageAfterCurrent() {
-    const pageNum = PAGES_DATA[currentPageIndex].number;
-    
-    log('INFO', 'ADD_PAGE_START', { afterPage: pageNum });
-    
-    const confirmed = confirm(t('confirm.add_page', { num: pageNum }));
-    
-    if (!confirmed) {
-        log('INFO', 'ADD_PAGE_CANCELLED', {});
+// Split the current page into two: first half stays, second half moves to a new page right after
+async function explodePage() {
+    const page = PAGES_DATA[currentPageIndex];
+    const n = page.photo_count;
+    const stayCount = Math.ceil(n / 2);
+    const moveCount = Math.floor(n / 2);
+
+    if (n < 2) {
+        showToast('Se necesitan al menos 2 fotos para explotar una página.', { type: 'warning' });
         return;
     }
-    
+
+    const confirmed = await showConfirm({
+        title: 'Explotar página',
+        message: `¿Explotar la página ${page.number} en dos?\n\n` +
+                 `• Esta página quedará con ${stayCount} foto${stayCount !== 1 ? 's' : ''} (primera mitad).\n` +
+                 `• Se creará una nueva página con ${moveCount} foto${moveCount !== 1 ? 's' : ''} (segunda mitad).\n\n` +
+                 `La numeración final se actualizará en el próximo render.`
+    });
+
+    if (!confirmed) return;
+
     try {
-        const response = await fetch('/api/pages/create', {
+        const response = await fetch(`/api/page/${page.id}/explode`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ after_page: pageNum })
         });
-        
+
         const data = await response.json();
-        
+
         if (data.success) {
-            log('INFO', 'ADD_PAGE_SUCCESS', {});
-            
-            const newPageEntry = {
-                id: data.page.folder_name,
-                number: data.page.page_number,
-                title: data.page.section_titles[0] || `Página ${data.page.page_number}`,
-                photo_count: 0,
-                layout_mode: data.page.layout_mode,
+            PAGES_DATA[currentPageIndex].photo_count = data.original_page.photo_count;
+
+            const newEntry = {
+                id: data.new_page.id,
+                number: data.new_page.number,
+                title: data.new_page.section_titles[0] || `Página ${data.new_page.number}`,
+                photo_count: data.new_page.photo_count,
+                layout_mode: data.new_page.layout_mode,
             };
-            
-            PAGES_DATA.splice(currentPageIndex + 1, 0, newPageEntry);
+            PAGES_DATA.splice(currentPageIndex + 1, 0, newEntry);
+
             initPagePanel();
-            
-            alert(t('success.page_created'));
-            
-            await loadPage(currentPageIndex + 1);
+            await regeneratePreview();
+            await loadPage(currentPageIndex);
         } else {
-            log('ERROR', 'ADD_PAGE_FAILED', { error: data.error });
-            alert(t('error.create_page') + data.error);
+            showToast('Error al explotar página: ' + data.error, { type: 'error' });
         }
     } catch (error) {
-        log('ERROR', 'ADD_PAGE_EXCEPTION', { error: error.message });
-        alert(t('error.connection_create_page'));
+        log('ERROR', 'EXPLODE_PAGE_EXCEPTION', { error: error.message });
+        showToast('Error de conexión al explotar página', { type: 'error' });
     }
 }
 
@@ -356,7 +402,11 @@ async function deletePage() {
     const pageId = PAGES_DATA[currentPageIndex].id;
     const pageNum = PAGES_DATA[currentPageIndex].number;
     
-    const confirmed = confirm(t('confirm.delete_page', { num: pageNum }));
+    const confirmed = await showConfirm({
+        title: 'Borrar página',
+        message: t('confirm.delete_page', { num: pageNum }),
+        danger: true
+    });
     
     if (!confirmed) {
         return;
@@ -370,7 +420,7 @@ async function deletePage() {
         const data = await response.json();
         
         if (data.success) {
-            alert(t('success.page_deleted'));
+            showToast(t('success.page_deleted'), { type: 'success' });
             
             PAGES_DATA.splice(currentPageIndex, 1);
             
@@ -378,106 +428,148 @@ async function deletePage() {
             if (PAGES_DATA.length > 0) {
                 await loadPage(newIndex);
             } else {
-                alert(t('success.no_more_pages'));
+                showToast(t('success.no_more_pages'), { type: 'success' });
                 exitEditor();
             }
         } else {
-            alert(t('error.delete_page') + data.error);
+            showToast(t('error.delete_page') + data.error, { type: 'error' });
         }
     } catch (error) {
         console.error('Failed to delete page:', error);
-        alert(t('error.connection_delete_page'));
+        showToast(t('error.connection_delete_page'), { type: 'error' });
     }
 }
 
-// Update page title
-async function updatePageTitle() {
-    const titleInput = document.getElementById('page-title');
-    const newTitle = titleInput.value.trim();
-    
-    log('INFO', 'UPDATE_TITLE_START', { newTitle });
-    
-    if (!newTitle) {
-        log('WARN', 'UPDATE_TITLE_EMPTY', {});
-        alert(t('validation.title_empty'));
+// Rename page (first title in section_titles)
+async function renamePage() {
+    const pageId = PAGES_DATA[currentPageIndex].id;
+    const currentTitle = currentPageSectionTitles[0] || '';
+    const newTitle = await showPrompt({
+        title: 'Renombrar página',
+        message: 'Nuevo título de la página:',
+        defaultValue: currentTitle
+    });
+
+    if (newTitle === null) return;
+    const trimmed = newTitle.trim();
+    if (!trimmed) {
+        showToast(t('validation.title_empty'), { type: 'warning' });
         return;
     }
-    
+    if (trimmed === currentTitle) return;
+
+    const newTitles = currentPageSectionTitles.slice();
+    newTitles[0] = trimmed;
+    await saveSectionTitles(pageId, newTitles);
+}
+
+// Rename subtitle (second title in section_titles)
+async function renameSubtitle() {
     const pageId = PAGES_DATA[currentPageIndex].id;
-    const titles = [newTitle];
-    
+    const currentSubtitle = currentPageSectionTitles[1] || '';
+    const newSubtitle = await showPrompt({
+        title: 'Renombrar subtítulo',
+        message: 'Subtítulo (vacío = sin subtítulo):',
+        defaultValue: currentSubtitle
+    });
+
+    if (newSubtitle === null) return;
+    const trimmed = newSubtitle.trim();
+    if (trimmed === currentSubtitle) return;
+
+    const newTitles = currentPageSectionTitles.slice();
+    if (trimmed) {
+        newTitles[1] = trimmed;
+    } else if (newTitles.length > 1) {
+        newTitles.splice(1, 1);
+    }
+    if (!newTitles[0]) newTitles[0] = `Página ${PAGES_DATA[currentPageIndex].number}`;
+    await saveSectionTitles(pageId, newTitles);
+}
+
+async function saveSectionTitles(pageId, newTitles) {
+    const oldTitles = currentPageSectionTitles.slice();
+    log('INFO', 'UPDATE_TITLE_START', { newTitles });
+
     try {
-        let oldTitles = [];
-        try {
-            const response_get = await fetch(`/api/page/${pageId}`);
-            const data_get = await response_get.json();
-            oldTitles = data_get.success ? data_get.page.section_titles : [];
-        } catch (e) {
-            log('WARN', 'UPDATE_TITLE_OLD_FETCH_FAILED', {});
-        }
-        
         const response = await fetch(`/api/page/${pageId}/title`, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({titles: titles})
+            body: JSON.stringify({titles: newTitles})
         });
-        
+
         const data = await response.json();
-        
+
         if (data.success) {
             log('INFO', 'UPDATE_TITLE_SUCCESS', {});
             if (oldTitles.length > 0) {
-                pushUndoState('title', {
-                    oldTitles: oldTitles,
-                    newTitles: titles
-                });
+                pushUndoState('title', { oldTitles, newTitles });
             }
-            
-            updatePagePanelTitle(currentPageIndex, titles[0] || `Página ${PAGES_DATA[currentPageIndex].number}`);
-            PAGES_DATA[currentPageIndex].title = titles[0];
-            
+
+            currentPageSectionTitles = newTitles.slice();
+            updatePagePanelTitle(currentPageIndex, newTitles[0] || `Página ${PAGES_DATA[currentPageIndex].number}`);
+            PAGES_DATA[currentPageIndex].title = newTitles[0];
+
             incrementPendingChanges();
             await regeneratePreview();
         } else {
             log('ERROR', 'UPDATE_TITLE_FAILED', { error: data.error });
-            alert(t('error.update_title') + data.error);
+            showToast(t('error.update_title') + data.error, { type: 'error' });
         }
     } catch (error) {
         log('ERROR', 'UPDATE_TITLE_EXCEPTION', { error: error.message });
-        alert(t('error.connection_update_title'));
+        showToast(t('error.connection_update_title'), { type: 'error' });
     }
 }
 
-// Update layout mode
-async function updateLayoutMode() {
+// Layout mode modal
+function openLayoutModeModal() {
+    const modal = document.getElementById('layout-mode-modal');
+    const select = document.getElementById('layout-mode-select');
+    if (select) select.value = currentPageLayoutMode || 'mesa_de_luz';
+    if (modal) modal.classList.remove('hidden');
+}
+
+function closeLayoutModeModal() {
+    const modal = document.getElementById('layout-mode-modal');
+    if (modal) modal.classList.add('hidden');
+}
+
+async function applyLayoutModeFromModal() {
     const layoutSelect = document.getElementById('layout-mode-select');
     const newMode = layoutSelect?.value || 'mesa_de_luz';
+    closeLayoutModeModal();
+    if (newMode === currentPageLayoutMode) return;
+    await updateLayoutMode(newMode);
+}
+
+async function updateLayoutMode(newMode) {
     const pageId = PAGES_DATA[currentPageIndex].id;
-    
+
     log('INFO', 'UPDATE_LAYOUT_MODE_START', { newMode });
-    
+
     try {
         const response = await fetch(`/api/page/${pageId}/layout-mode`, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ layout_mode: newMode })
         });
-        
+
         const data = await response.json();
-        
+
         if (data.success) {
             log('INFO', 'UPDATE_LAYOUT_MODE_SUCCESS', {});
-            document.getElementById('album-layout-mode').textContent = newMode;
+            currentPageLayoutMode = newMode;
             PAGES_DATA[currentPageIndex].layout_mode = newMode;
             incrementPendingChanges();
             await regeneratePreview();
         } else {
             log('ERROR', 'UPDATE_LAYOUT_MODE_FAILED', { error: data.error });
-            alert(t('error.update_layout') + data.error);
+            showToast(t('error.update_layout') + data.error, { type: 'error' });
         }
     } catch (error) {
         log('ERROR', 'UPDATE_LAYOUT_MODE_EXCEPTION', { error: error.message });
-        alert(t('error.connection_update_layout'));
+        showToast(t('error.connection_update_layout'), { type: 'error' });
     }
 }
 
@@ -500,11 +592,11 @@ async function regeneratePreview() {
             loadPreview(pageId);
         } else {
             log('ERROR', 'REGENERATE_FAILED', { error: data.error });
-            alert(t('error.preview') + data.error);
+            showToast(t('error.preview') + data.error, { type: 'error' });
         }
     } catch (error) {
         log('ERROR', 'REGENERATE_EXCEPTION', { error: error.message });
-        alert(t('error.connection_preview'));
+        showToast(t('error.connection_preview'), { type: 'error' });
     } finally {
         hideLoading();
     }
@@ -610,11 +702,11 @@ async function updatePhotoCaption() {
             await regeneratePreview();
         } else {
             log('ERROR', 'UPDATE_CAPTION_FAILED', { error: data.error });
-            alert(t('error.update_caption') + data.error);
+            showToast(t('error.update_caption') + data.error, { type: 'error' });
         }
     } catch (error) {
         log('ERROR', 'UPDATE_CAPTION_EXCEPTION', { error: error.message });
-        alert(t('error.connection_update_caption'));
+        showToast(t('error.connection_update_caption'), { type: 'error' });
     }
 }
 
@@ -623,10 +715,11 @@ async function updatePhotoCaption() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function pushUndoState(action, data) {
+    const currentPage = PAGES_DATA && PAGES_DATA[currentPageIndex];
     undoStack.push({
         action: action,
-        pageId: PAGES_DATA[currentPageIndex].id,
-        pageIndex: currentPageIndex,
+        pageId: currentPage ? currentPage.id : null,
+        pageIndex: currentPage ? currentPageIndex : null,
         data: data,
         timestamp: Date.now()
     });
@@ -641,13 +734,14 @@ function pushUndoState(action, data) {
 
 async function performUndo() {
     if (undoStack.length === 0) return;
-    
+
     const state = undoStack.pop();
-    
-    if (state.pageIndex !== currentPageIndex) {
+
+    // Album actions track which page the change happened on; source actions don't.
+    if (typeof state.pageIndex === 'number' && state.pageIndex !== currentPageIndex) {
         await loadPage(state.pageIndex);
     }
-    
+
     try {
         switch (state.action) {
             case 'reorder':
@@ -659,10 +753,19 @@ async function performUndo() {
             case 'caption':
                 await restoreCaption(state.data.filename, state.data.oldCaption);
                 break;
+            case 'delete_photo':
+                await restoreDeletedPhoto(state.data.trash_token);
+                break;
+            case 'delete_source_photo':
+            case 'delete_source_folder':
+                if (typeof restoreSourceDeletion === 'function') {
+                    await restoreSourceDeletion(state.action, state.data);
+                }
+                break;
         }
     } catch (error) {
         console.error('Failed to perform undo:', error);
-        alert(t('error.undo'));
+        showToast(t('error.undo'), { type: 'error' });
     }
     
     const undoBtn = document.getElementById('undo-btn');
@@ -746,6 +849,29 @@ async function restoreCaption(filename, oldCaption) {
     }
 }
 
+async function restoreDeletedPhoto(trashToken) {
+    try {
+        const response = await fetch('/api/restore-photo', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ trash_token: trashToken })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            await loadPage(currentPageIndex);
+            await regeneratePreview();
+            showToast(t('success.undo') || 'Foto restaurada', { type: 'success' });
+        } else {
+            throw new Error(data.error || 'Restore failed');
+        }
+    } catch (error) {
+        console.error('Failed to restore deleted photo:', error);
+        throw error;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Page Navigator Panel
 // ═══════════════════════════════════════════════════════════════════════════
@@ -760,51 +886,97 @@ function initPagePanel() {
         const item = document.createElement('div');
         item.className = 'page-list-item';
         item.dataset.index = index;
-        
+
         const numSpan = document.createElement('span');
         numSpan.className = 'page-list-num';
         numSpan.textContent = String(page.number).padStart(2, '0');
-        
+
         const titleSpan = document.createElement('span');
         titleSpan.className = 'page-list-title';
         titleSpan.textContent = page.title || `Página ${page.number}`;
         titleSpan.id = `page-panel-title-${index}`;
-        
+
         item.appendChild(numSpan);
         item.appendChild(titleSpan);
-        
+
         item.addEventListener('click', () => navigateToPageFromPanel(index));
-        
+
+        // Drop target: accept dragged album photos from a different page
+        item.addEventListener('dragover', (e) => {
+            if (!sortableInstance) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            document.querySelectorAll('#page-list .page-list-item').forEach(el => el.classList.remove('drag-over'));
+            if (index !== currentPageIndex) item.classList.add('drag-over');
+        });
+        item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+        item.addEventListener('drop', (e) => {
+            e.preventDefault();
+            item.classList.remove('drag-over');
+            if (index === currentPageIndex) return;
+            const filenames = JSON.parse(e.dataTransfer.getData('text/plain') || '[]');
+            if (filenames.length) {
+                _crossPageDropHandled = true;
+                moveAlbumPhotosToPage(filenames, index);
+            }
+        });
+
         pageList.appendChild(item);
     });
     
     const panel = document.getElementById('page-panel');
     if (panel) {
         panel.addEventListener('mouseenter', () => { pagePanelFocused = true; });
-        panel.addEventListener('mouseleave', () => { pagePanelFocused = false; });
+        panel.addEventListener('mouseleave', () => {
+            pagePanelFocused = false;
+            document.querySelectorAll('#page-list .page-list-item').forEach(el => el.classList.remove('drag-over'));
+        });
     }
-    
+
+    const albumSidebar = document.getElementById('album-sidebar');
+    if (albumSidebar && !albumSidebar.dataset.focusWired) {
+        albumSidebar.addEventListener('mouseenter', () => { photoListFocused = true; });
+        albumSidebar.addEventListener('mouseleave', () => { photoListFocused = false; });
+        albumSidebar.dataset.focusWired = '1';
+    }
+
     log('INFO', 'PAGE_PANEL_INIT', { pages: PAGES_DATA.length });
 }
 
-function togglePagePanel() {
-    const panel = document.getElementById('page-panel');
-    if (!panel) return;
-    
-    pagePanelOpen = !pagePanelOpen;
-    
-    if (pagePanelOpen) {
-        panel.classList.remove('collapsed');
-        setTimeout(() => {
-            const activeItem = document.querySelector('.page-list-item.active');
-            if (activeItem) activeItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }, 260);
-    } else {
-        panel.classList.add('collapsed');
-        pagePanelFocused = false;
+// Move logical focus to the page panel (left) — highlights + toggles flags
+function focusPagePanel() {
+    photoListFocused = false;
+    pagePanelFocused = true;
+    document.getElementById('album-sidebar')?.classList.remove('panel-has-focus');
+    document.getElementById('page-panel')?.classList.add('panel-has-focus');
+
+    const items = document.querySelectorAll('.page-list-item');
+    if (pagePanelKeyboardIndex < 0 || pagePanelKeyboardIndex >= items.length) {
+        pagePanelKeyboardIndex = currentPageIndex;
     }
-    
-    log('INFO', 'PAGE_PANEL_TOGGLED', { open: pagePanelOpen });
+    items.forEach((item, i) => {
+        item.classList.toggle('keyboard-focus', i === pagePanelKeyboardIndex);
+    });
+    items[pagePanelKeyboardIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// Move logical focus to the photo list (right)
+function focusPhotoList() {
+    pagePanelFocused = false;
+    photoListFocused = true;
+    document.getElementById('page-panel')?.classList.remove('panel-has-focus');
+    document.getElementById('album-sidebar')?.classList.add('panel-has-focus');
+
+    const items = document.querySelectorAll('.photo-item');
+    if (items.length === 0) return;
+    const alreadySelected = Array.from(items).find(i => i.classList.contains('selected'));
+    if (alreadySelected) {
+        alreadySelected.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } else {
+        const first = items[0];
+        selectPhoto(first.dataset.filename, first);
+        first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
 }
 
 function navigateToPageFromPanel(index) {
@@ -850,6 +1022,44 @@ function navigatePagePanelSelection(delta) {
     navigateToPageFromPanel(newIndex);
 }
 
+// Move photos from the current page to another page via drag-to-panel-item
+async function moveAlbumPhotosToPage(filenames, targetPageIndex) {
+    const sourcePage = PAGES_DATA[currentPageIndex];
+    const targetPage = PAGES_DATA[targetPageIndex];
+    if (!sourcePage || !targetPage) return;
+
+    log('INFO', 'MOVE_ALBUM_PHOTOS_START', { filenames, target: targetPage.id });
+
+    try {
+        const response = await fetch(`/api/page/${sourcePage.id}/move-photos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_page_id: targetPage.id, filenames }),
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            showToast(`${filenames.length} foto(s) movida(s) a página ${targetPage.number}`, { type: 'success' });
+            incrementPendingChanges();
+            // Regenerate both pages in parallel, then navigate to the target
+            const sourceIdx = currentPageIndex;
+            await Promise.all([
+                fetch(`/api/page/${sourcePage.id}/regenerate`, { method: 'POST' }),
+                fetch(`/api/page/${targetPage.id}/regenerate`, { method: 'POST' }),
+            ]);
+            // Navigate to the target page so the user sees where the photo landed
+            await loadPage(targetPageIndex);
+            await regeneratePreview();
+        } else {
+            log('ERROR', 'MOVE_ALBUM_PHOTOS_FAILED', { error: data.error });
+            showToast('Error al mover fotos: ' + data.error, { type: 'error' });
+        }
+    } catch (error) {
+        log('ERROR', 'MOVE_ALBUM_PHOTOS_EXCEPTION', { error: error.message });
+        showToast('Error de conexión al mover fotos', { type: 'error' });
+    }
+}
+
 // Save changes
 async function saveChanges(silent = false) {
     try {
@@ -861,35 +1071,39 @@ async function saveChanges(silent = false) {
         
         if (data.success) {
             if (!silent) {
-                alert(t('success.title'));
+                showToast(t('success.title'), { type: 'success' });
             }
             pendingChanges = 0;
         } else {
             if (!silent) {
-                alert(t('error.save') + data.error);
+                showToast(t('error.save') + data.error, { type: 'error' });
             }
         }
     } catch (error) {
         console.error('Failed to save:', error);
         if (!silent) {
-            alert(t('error.connection_save'));
+            showToast(t('error.connection_save'), { type: 'error' });
         }
     }
 }
 
 // Exit editor
-function exitEditor() {
+async function exitEditor() {
     if (pendingChanges > 0) {
-        const confirmed = confirm(t('success.unsaved_changes', { count: pendingChanges }));
-        
+        const confirmed = await showConfirm({
+            title: 'Cambios sin guardar',
+            message: t('success.unsaved_changes', { count: pendingChanges }),
+            danger: true
+        });
+
         if (!confirmed) {
             return;
         }
     }
-    
+
     window.close();
     setTimeout(() => {
-        alert(t('success.can_close'));
+        showToast(t('success.can_close'), { type: 'info' });
     }, 100);
 }
 
