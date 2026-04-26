@@ -176,9 +176,8 @@ def rename_folder_and_photos(source_path: Path, old_name: str, new_name: str) ->
 
 
 def _folder_prefix(folder_name: str) -> str:
-    """Derive the CamelCase prefix for a folder's photos using the full folder name."""
-    clean_name = prettify_folder_name(folder_name)
-    return ''.join(word.capitalize() for word in clean_name.split())
+    """Use the full folder name as the prefix for photos (preserves date and underscores)."""
+    return folder_name
 
 
 def _renumber_folder(folder_path: Path, prefix: str) -> bool:
