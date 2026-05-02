@@ -29,7 +29,7 @@ async function initSourceMode() {
 function setupSourceEventListeners() {
     document.getElementById('delete-source-photo-btn')?.addEventListener('click', deleteSourcePhoto);
     document.getElementById('rename-event-btn')?.addEventListener('click', renameEvent);
-    document.getElementById('control-event-btn')?.addEventListener('click', deleteEvent);
+    document.getElementById('delete-event-btn')?.addEventListener('click', deleteEvent);
     document.getElementById('toggle-event-completed-btn')?.addEventListener('click', toggleEventCompleted);
 
     document.addEventListener('keydown', handleSourceKeyboard);
@@ -50,7 +50,8 @@ function updateRegenBtnLabel() {
 
 function handleSourceKeyboard(e) {
     if (currentTab !== 'source') return;
-    
+    if (document.querySelector('.modal:not(.hidden)')) return;
+
     if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
         if (e.key === 'ArrowLeft') {
             if (sourcePhotoListFocused) {
@@ -408,6 +409,12 @@ async function deleteEvent() {
     if (!currentEventFolder) {
         return;
     }
+
+    const confirmed = await showConfirm({
+        title: 'Borrar evento',
+        message: `Se moverá "${currentEventFolder.name}" a la papelera. ¿Continuar?`,
+    });
+    if (!confirmed) return;
 
     try {
         const response = await fetch(`/api/source/folder/${currentEventFolder.name}?force=true`, {
@@ -771,9 +778,11 @@ async function moveSourcePhotosToEvent(filenames, targetEventIndex) {
 }
 
 function updateEventPanelActiveItem(index) {
-    document.querySelectorAll('#event-panel .page-list-item').forEach((item, i) => {
+    const items = document.querySelectorAll('#event-panel .page-list-item');
+    items.forEach((item, i) => {
         item.classList.toggle('active', i === index);
     });
+    items[index]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function navigateEventPanelSelection(delta) {

@@ -62,7 +62,8 @@ function setupAlbumEventListeners() {
 // Handle keyboard shortcuts in album mode
 function handleAlbumKeyboard(e) {
     if (currentTab !== 'album') return;
-    
+    if (document.querySelector('.modal:not(.hidden)')) return;
+
     if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
         if (e.key === 'ArrowLeft') {
             if (photoListFocused) {

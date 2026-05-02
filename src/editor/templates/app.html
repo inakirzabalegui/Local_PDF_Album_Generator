@@ -78,6 +78,7 @@
                 <div class="header-right">
                     <button id="open-folder-btn" class="btn btn-secondary" onclick="openAnotherFolder()" data-i18n="header.open_folder">📁 Abrir carpeta</button>
                     <button id="regenerate-album-header-btn" class="btn btn-secondary">🔄 Regenerar Álbum</button>
+                    <button id="help-btn" class="btn btn-secondary" onclick="openHelp()" data-i18n-title="header.help_title" title="Ayuda">?</button>
                     <button id="lang-btn" onclick="toggleLanguage()" title="Toggle language" style="padding: 8px 12px; background: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); cursor: pointer; font-weight: 600;">ES</button>
                     <button id="debug-btn" class="btn btn-secondary" data-i18n-title="header.debug">{ }</button>
                     <button id="undo-btn" class="btn btn-secondary" disabled data-i18n="header.undo">↶ Deshacer</button>
@@ -234,6 +235,141 @@
                     </div>
                     <p id="gen-modal-counter" class="gen-counter">0 / 0</p>
                     <p id="gen-modal-filename" class="gen-filename"></p>
+                </div>
+            </div>
+
+            <!-- Help Modal -->
+            <div id="help-modal" class="modal hidden" onclick="handleHelpOverlayClick(event)">
+                <div class="modal-content help-modal-content">
+                    <button class="help-close-btn" onclick="closeHelp()" data-i18n-title="help.close" title="Cerrar">✕</button>
+                    <h3 class="help-title" data-i18n="help.modal_title">Guía de Uso</h3>
+
+                    <div class="help-sections">
+                        <!-- Overview -->
+                        <div class="help-section">
+                            <h4 class="help-section-title" data-i18n="help.section_overview">¿Cómo funciona?</h4>
+                            <p class="help-text" data-i18n="help.overview_source">La pestaña <strong>Fuente</strong> te permite revisar, renombrar y borrar eventos y fotos del origen antes de generar el álbum.</p>
+                            <p class="help-text" data-i18n="help.overview_edition">La pestaña <strong>Edición</strong> te permite reordenar fotos, cambiar títulos, seleccionar layouts y reorganizar páginas del workspace.</p>
+                        </div>
+
+                        <!-- Workflow -->
+                        <div class="help-section">
+                            <h4 class="help-section-title" data-i18n="help.section_flow">Flujo recomendado</h4>
+                            <ol class="help-flow-list">
+                                <li data-i18n="help.flow_1">Abre o arrastra la carpeta de fotos con <kbd>📁 Abrir carpeta</kbd></li>
+                                <li data-i18n="help.flow_2">Revisa los eventos en <strong>Fuente</strong>: renombra y borra lo que no quieras</li>
+                                <li data-i18n="help.flow_3">Pulsa <kbd>🔄 Regenerar Álbum</kbd> para crear el workspace de páginas</li>
+                                <li data-i18n="help.flow_4">Cambia a <strong>Edición</strong> para ajustar fotos, títulos y layouts</li>
+                                <li data-i18n="help.flow_5">Guarda con <kbd>Cmd/Ctrl+S</kbd> y exporta el PDF desde la línea de comandos</li>
+                            </ol>
+                        </div>
+
+                        <!-- Keyboard shortcuts -->
+                        <div class="help-section">
+                            <h4 class="help-section-title" data-i18n="help.section_shortcuts">Atajos de teclado</h4>
+                            <table class="help-table">
+                                <thead>
+                                    <tr>
+                                        <th data-i18n="help.col_key">Tecla</th>
+                                        <th data-i18n="help.col_action">Acción</th>
+                                        <th data-i18n="help.col_scope">Ámbito</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><kbd>?</kbd> / <kbd>F1</kbd></td>
+                                        <td data-i18n="help.key_help">Abrir / cerrar esta ayuda</td>
+                                        <td data-i18n="help.scope_global">Global</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>Esc</kbd></td>
+                                        <td data-i18n="help.key_esc">Cerrar modales y diálogos</td>
+                                        <td data-i18n="help.scope_global">Global</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>C</kbd></td>
+                                        <td data-i18n="help.key_complete">Marcar / desmarcar Completado</td>
+                                        <td data-i18n="help.scope_both">Fuente (evento) · Edición (página)</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>R</kbd></td>
+                                        <td data-i18n="help.key_rename">Renombrar evento / página</td>
+                                        <td data-i18n="help.scope_both">Fuente · Edición</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>D</kbd></td>
+                                        <td data-i18n="help.key_delete">Borrar foto seleccionada</td>
+                                        <td data-i18n="help.scope_both">Fuente · Edición</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>↑</kbd> / <kbd>↓</kbd></td>
+                                        <td data-i18n="help.key_nav_ud">Navegar fotos o panel</td>
+                                        <td data-i18n="help.scope_both">Fuente · Edición</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>←</kbd></td>
+                                        <td data-i18n="help.key_nav_left">Cambiar foco: fotos → panel (Edición: también navega a página anterior)</td>
+                                        <td data-i18n="help.scope_both">Fuente · Edición</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>→</kbd></td>
+                                        <td data-i18n="help.key_nav_right">Cambiar foco: panel → fotos (Edición: también navega a página siguiente)</td>
+                                        <td data-i18n="help.scope_both">Fuente · Edición</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> + <kbd>S</kbd></td>
+                                        <td data-i18n="help.key_save">Guardar cambios</td>
+                                        <td data-i18n="help.scope_edition">Edición</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- Actions by tab -->
+                        <div class="help-section help-actions-grid">
+                            <div class="help-actions-col">
+                                <h4 class="help-section-title" data-i18n="help.section_source_actions">Acciones en Fuente</h4>
+                                <ul class="help-actions-list">
+                                    <li data-i18n="help.action_rename_event">✏️ <strong>Renombrar Evento</strong> — cambia el nombre del evento y renombra automáticamente las fotos con el nuevo prefijo</li>
+                                    <li data-i18n="help.action_delete_event">🗑️ <strong>Borrar Evento</strong> — elimina la carpeta de evento completa</li>
+                                    <li data-i18n="help.action_delete_source_photo">🗑️ <strong>Borrar Foto</strong> — elimina la foto seleccionada del origen</li>
+                                    <li data-i18n="help.action_complete_event">✅ <strong>Completado</strong> — marca el evento como revisado (punto verde)</li>
+                                    <li data-i18n="help.action_regen">🔄 <strong>Regenerar Álbum</strong> — reconstruye el workspace de páginas desde cero</li>
+                                </ul>
+                            </div>
+                            <div class="help-actions-col">
+                                <h4 class="help-section-title" data-i18n="help.section_edition_actions">Acciones en Edición</h4>
+                                <ul class="help-actions-list">
+                                    <li data-i18n="help.action_rename_page">✏️ <strong>Renombrar Página</strong> — edita el título de sección</li>
+                                    <li data-i18n="help.action_rename_subtitle">📝 <strong>Renombrar Subtítulo</strong> — edita el subtítulo de la página</li>
+                                    <li data-i18n="help.action_layout">🎨 <strong>Modo Layout</strong> — elige entre Mesa de Luz, Grid Compacto o Híbrido</li>
+                                    <li data-i18n="help.action_explode">💥 <strong>Explotar Página</strong> — divide la página en dos (útil si hay demasiadas fotos)</li>
+                                    <li data-i18n="help.action_delete_page">🗑️ <strong>Borrar Página</strong> — elimina la página completa</li>
+                                    <li data-i18n="help.action_delete_photo">🗑️ <strong>Borrar Foto</strong> — elimina la foto seleccionada de la página</li>
+                                    <li data-i18n="help.action_complete_page">✅ <strong>Completado</strong> — marca la página como revisada</li>
+                                    <li data-i18n="help.action_reorder">↕️ <strong>Reordenar</strong> — arrastra fotos en el panel lateral para cambiar su orden</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- Header actions -->
+                        <div class="help-section">
+                            <h4 class="help-section-title" data-i18n="help.section_header_actions">Cabecera global</h4>
+                            <ul class="help-actions-list help-actions-inline">
+                                <li data-i18n="help.header_open_folder">📁 <strong>Abrir carpeta</strong> — abre un selector nativo para cambiar de álbum</li>
+                                <li data-i18n="help.header_regen">🔄 <strong>Regenerar Álbum</strong> — disponible desde cualquier pestaña</li>
+                                <li data-i18n="help.header_undo">↶ <strong>Deshacer</strong> — revierte el último cambio en Edición</li>
+                                <li data-i18n="help.header_save">💾 <strong>Guardar</strong> — guarda todos los cambios pendientes</li>
+                                <li data-i18n="help.header_exit">✕ <strong>Salir</strong> — cierra el editor</li>
+                                <li data-i18n="help.header_lang">ES/EN <strong>Idioma</strong> — alterna entre español e inglés</li>
+                                <li data-i18n="help.header_debug">{ } <strong>Debug</strong> — muestra el log de depuración interno</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div class="modal-actions">
+                        <button class="btn btn-primary" onclick="closeHelp()" data-i18n="help.close_btn">Entendido</button>
+                    </div>
                 </div>
             </div>
 

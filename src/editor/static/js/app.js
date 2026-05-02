@@ -2,6 +2,45 @@
 // App Controller - Tab Switching and Initialization
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ─── Help modal ─────────────────────────────────────────────────────────────
+
+function openHelp() {
+    document.getElementById('help-modal')?.classList.remove('hidden');
+}
+
+function closeHelp() {
+    document.getElementById('help-modal')?.classList.add('hidden');
+}
+
+function handleHelpOverlayClick(e) {
+    if (e.target === document.getElementById('help-modal')) closeHelp();
+}
+
+window.openHelp  = openHelp;
+window.closeHelp = closeHelp;
+window.handleHelpOverlayClick = handleHelpOverlayClick;
+
+// Global keyboard shortcuts (help toggle + Esc)
+document.addEventListener('keydown', (e) => {
+    const modal = document.getElementById('help-modal');
+    const isOpen = modal && !modal.classList.contains('hidden');
+
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    if (e.key === '?' || e.key === 'F1') {
+        e.preventDefault();
+        isOpen ? closeHelp() : openHelp();
+        return;
+    }
+
+    if (e.key === 'Escape' && isOpen) {
+        e.preventDefault();
+        closeHelp();
+    }
+});
+
+// ─── App initialisation ─────────────────────────────────────────────────────
+
 document.addEventListener('DOMContentLoaded', () => {
     log('INFO', 'APP_CONTROLLER_INIT', {});
 
