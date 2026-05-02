@@ -416,7 +416,8 @@ python make_album.py --edit /ruta/al/workspace
 - **Vista previa PDF**: Preview en tiempo real del resultado final después de cada cambio
 - **Interfaz web**: Se abre automáticamente en tu navegador en `http://localhost:5050`
 - **Multi-página**: Edita cualquier página del álbum sin cerrar el editor
-- **Atajos de teclado**: `←`/`→` para navegar, `Cmd+S` como recordatorio de guardado, `D` para borrar foto seleccionada
+- **Atajos de teclado**: `←`/`→` para navegar, `Cmd+S` como recordatorio de guardado, `D` para borrar foto seleccionada, `C` para marcar/desmarcar la página o evento actual como "Completado"
+- **Estado de revisión**: el botón "Completado" (o la tecla `C`) marca un evento/página como revisado. Aparece una bolita verde en la esquina del ítem en el panel lateral. Los ítems completados se atenúan para destacar lo pendiente. El estado se persiste en `page_config.yaml` (páginas) y `.album_meta.yaml` (eventos fuente)
 
 **Detener el editor:**
 Presiona `Ctrl+C` en la ventana de Terminal para detener el servidor Flask.

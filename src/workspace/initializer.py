@@ -35,6 +35,7 @@ def create_workspace(
     source_dir_name: str | None = None,
     cover_candidates: list[PhotoInfo] | None = None,
     backcover_candidates: list[PhotoInfo] | None = None,
+    progress_callback=None,
 ) -> tuple[GlobalConfig, list[PageConfig]]:
     """Build the full workspace directory from a sorted photo list.
 
@@ -68,12 +69,42 @@ def create_workspace(
         logger.info(f"Usando primera foto para portada: {cover_photo.path.name}")
     else:
         cover_photo = None
-    
+
+    # ── Back cover selection ─────────────────────────────────────────────
+    # Determine early so we can calculate total for progress reporting
+    if backcover_candidates:
+        _backcover_photo_pre = random.choice(backcover_candidates)
+        _content_photos_pre = photos[1:] if photos else []
+    elif len(photos) > 1:
+        _backcover_photo_pre = photos[-1]
+        _content_photos_pre = photos[1:-1]
+    else:
+        _backcover_photo_pre = None
+        _content_photos_pre = photos[1:] if photos else []
+
+    _total_downloads = (
+        (1 if cover_photo else 0)
+        + len(_content_photos_pre)
+        + (1 if _backcover_photo_pre else 0)
+    )
+    _downloaded = [0]
+
+    def _progress(photo_path):
+        _downloaded[0] += 1
+        if progress_callback:
+            progress_callback({
+                "step": "processing",
+                "current": _downloaded[0],
+                "total": _total_downloads,
+                "name": photo_path.name,
+            })
+
     if cover_photo:
         cover_dir = workspace / COVER_FOLDER
         cover_dir.mkdir()
         dst = cover_dir / f"cover{cover_photo.path.suffix.lower()}"
         downsample_image(cover_photo.path, dst)
+        _progress(cover_photo.path)
         page_configs.append(
             PageConfig(
                 folder=cover_dir,
@@ -85,18 +116,13 @@ def create_workspace(
         page_number += 1
 
     # ── Back cover selection ─────────────────────────────────────────────
-    # Use special backcover folder if available, otherwise use last photo
-    if backcover_candidates:
-        backcover_photo = random.choice(backcover_candidates)
-        logger.info(f"Usando foto de carpeta 'contraportada': {backcover_photo.path.name}")
-        content_photos = photos[1:] if photos else []
-    elif len(photos) > 1:
-        backcover_photo = photos[-1]
-        logger.info(f"Usando última foto para contraportada: {backcover_photo.path.name}")
-        content_photos = photos[1:-1]
-    else:
-        backcover_photo = None
-        content_photos = photos[1:] if photos else []
+    backcover_photo = _backcover_photo_pre
+    content_photos = _content_photos_pre
+    if backcover_photo:
+        logger.info(
+            f"{'Usando foto de carpeta contraportada' if backcover_candidates else 'Usando última foto para contraportada'}: "
+            f"{backcover_photo.path.name}"
+        )
 
     # ── Content pages: group by source_group WITHOUT mixing ─────────────
     all_dates = []
@@ -144,6 +170,7 @@ def create_workspace(
                 dst = page_dir / f"img_{seq:03d}{ext}"
                 if downsample_image(photo.path, dst) is not None:
                     actual_count += 1
+                _progress(photo.path)
 
             # Determine if any new sub_groups start on this page
             new_subs = []
@@ -182,6 +209,7 @@ def create_workspace(
         back_dir.mkdir()
         dst = back_dir / f"backcover{backcover_photo.path.suffix.lower()}"
         downsample_image(backcover_photo.path, dst)
+        _progress(backcover_photo.path)
         page_configs.append(
             PageConfig(
                 folder=back_dir,

@@ -59,7 +59,8 @@ Launch --app → Launcher (pick folder) → Bootstrap (check/create _album) → 
 ### Key State Files
 
 - **`global_config.yaml`** (workspace root): album-wide settings (page size, DPI, min/max photos per page, background color, font, photo weight multipliers, project title, date range). Editable before `--render`.
-- **`page_config.yaml`** (per page folder): `layout_seed`, `layout_mode`, `section_titles`, optional `featured_photos` (1.5× weight) and `hero_photos` (2.5× weight). `layout_seed` is preserved across reconciliations to keep layouts reproducible.
+- **`page_config.yaml`** (per page folder): `layout_seed`, `layout_mode`, `section_titles`, optional `featured_photos` (1.5× weight) and `hero_photos` (2.5× weight), and `completed` (bool, review flag). `layout_seed` is preserved across reconciliations to keep layouts reproducible.
+- **`.album_meta.yaml`** (per source event folder): stores `completed: true|false` — the manual review flag set by the user in Source mode. Not used by the render pipeline.
 - **`global_config_default.yaml`** (repo root): application-wide defaults applied to every new album on `--init`.
 
 ### Source Module Responsibilities
@@ -80,4 +81,40 @@ Launch --app → Launcher (pick folder) → Bootstrap (check/create _album) → 
 - **Folder naming:** Source subfolder names in format `YYYYMMDD_Name` are parsed into section titles `DD/MM/YYYY - Name`. Special folders `portada/` and `contraportada/` (case-insensitive) supply cover photos and are excluded from content pages.
 - **Font registration:** Registers `/System/Library/Fonts/Helvetica.ttc` as a TrueType font for UTF-8 support (tildes, ñ). Falls back to standard ReportLab fonts if unavailable.
 - **Photo Renaming in Source Mode:** When an event folder is renamed, all photos inside are automatically renamed with a CamelCase prefix derived from the folder name, maintaining chronological order. For example, renaming `20260109_Comida_Despedida_Js` to just `Comida despedida Js` will rename photos to `ComidaDespedidaJs_001.jpg`, `ComidaDespedidaJs_002.jpg`, etc.
+- **Review state:** The editor supports marking events (Fuente tab) and pages (Edición tab) as "completed" to track manual review progress. State is persisted in `.album_meta.yaml` per event folder and in `completed:` field of each `page_config.yaml`. Shortcut: `C` key or the "Completado" button in the action bar. Completed items appear with a green dot and are slightly dimmed in the panel.
 
+### Editor Keyboard Shortcuts
+
+| Key | Action |
+|---|---|
+| `D` | Delete selected photo (both tabs) |
+| `C` | Toggle Completado / Pendiente for current event or page |
+| `↑` / `↓` | Navigate photos or panel items |
+| `←` / `→` | Switch focus between panel and photo list |
+| `Cmd/Ctrl + S` | Save changes (Edición tab) |
+
+## Frontend Aesthetics
+
+```
+DISTILLED_AESTHETICS_PROMPT = """
+<frontend_aesthetics>
+You tend to converge toward generic, "on distribution" outputs. In frontend design, this creates what users call the "AI slop" aesthetic. Avoid this: make creative, distinctive frontends that surprise and delight. Focus on:
+
+Typography: Choose fonts that are beautiful, unique, and interesting. Avoid generic fonts like Arial and Inter; opt instead for distinctive choices that elevate the frontend's aesthetics.
+
+Color & Theme: Commit to a cohesive aesthetic. Use CSS variables for consistency. Dominant colors with sharp accents outperform timid, evenly-distributed palettes. Draw from IDE themes and cultural aesthetics for inspiration.
+
+Motion: Use animations for effects and micro-interactions. Prioritize CSS-only solutions for HTML. Use Motion library for React when available. Focus on high-impact moments: one well-orchestrated page load with staggered reveals (animation-delay) creates more delight than scattered micro-interactions.
+
+Backgrounds: Create atmosphere and depth rather than defaulting to solid colors. Layer CSS gradients, use geometric patterns, or add contextual effects that match the overall aesthetic.
+
+Avoid generic AI-generated aesthetics:
+- Overused font families (Inter, Roboto, Arial, system fonts)
+- Clichéd color schemes (particularly purple gradients on white backgrounds)
+- Predictable layouts and component patterns
+- Cookie-cutter design that lacks context-specific character
+
+Interpret creatively and make unexpected choices that feel genuinely designed for the context. Vary between light and dark themes, different fonts, different aesthetics. You still tend to converge on common choices (Space Grotesk, for example) across generations. Avoid this: it is critical that you think outside the box!
+</frontend_aesthetics>
+"""
+```

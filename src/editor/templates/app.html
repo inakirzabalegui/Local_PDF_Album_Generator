@@ -4,103 +4,53 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n-title="page.title">Álbum PDF - {{ album_title }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..900,0..100;1,9..144,300..900,0..100&family=Instrument+Sans:ital,wght@0,400..700;1,400..700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/editor.css') }}">
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
     <style>
-        /* Tab Navigation */
-        .tab-nav {
-            display: flex;
-            gap: 0;
-            border-bottom: 1px solid var(--color-border);
-            background: var(--color-bg-secondary);
-        }
-        
-        .tab-button {
-            flex: 0 1 auto;
-            padding: 12px 24px;
-            border: none;
-            background: transparent;
-            color: var(--color-text-secondary);
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            border-bottom: 2px solid transparent;
-            transition: all var(--transition-fast);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        
-        .tab-button:hover {
-            color: var(--color-text-primary);
-        }
-        
-        .tab-button.active {
-            color: var(--color-primary);
-            border-bottom-color: var(--color-primary);
-        }
-        
-        /* Tab Content Containers */
-        .tab-content {
-            display: none;
-            flex: 1;
-            overflow: hidden;
-        }
-        
-        .tab-content.active {
-            display: flex;
-        }
-        
-        /* Extend header to include tabs */
-        .header-tabs {
-            display: flex;
-            justify-content: space-between;
+        /* ── app.html-specific refinements ────────────────────────────── */
+
+        /* Lift the header's 3-column tabs + title + actions layout */
+        .header-tabs .header-center {
             align-items: center;
+        }
+
+        /* The ampersat that dresses the header title */
+        .header-center h1 .ornament {
+            color: var(--vermilion);
+            font-family: var(--font-serif);
+            font-style: italic;
+            font-variation-settings: "opsz" 36, "SOFT" 80, "wght" 360;
+            margin-right: 6px;
+            letter-spacing: 0;
+        }
+
+        /* Subtle page-count separator, typeset as a solidus */
+        .page-indicator .slash {
+            color: var(--vermilion);
+            padding: 0 4px;
+            font-family: var(--font-serif);
+            font-style: italic;
+        }
+
+        /* Layout-mode modal select */
+        #layout-mode-select {
             width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--hairline-soft);
+            background: var(--paper);
+            color: var(--ink);
+            font-family: var(--font-sans);
+            font-size: 13px;
+            border-radius: 0;
+            outline: none;
+            cursor: pointer;
         }
-        
-        .tabs-left {
-            flex: 1;
-            display: flex;
-            gap: 0;
-        }
-
-        /* Sidebar sections with visual separation */
-        .sidebar-section {
-            padding: 16px;
-            border-bottom: 1px solid var(--color-border);
-        }
-
-        .sidebar-section.sidebar-page-info,
-        .sidebar-section.sidebar-event-info {
-            background: var(--color-bg-secondary);
-        }
-
-        .sidebar-section.sidebar-photos {
-            background: var(--color-bg);
-            flex-grow: 1;
-            display: flex;
-            flex-direction: column;
-            overflow-y: auto;
-        }
-
-        .sidebar-section h3 {
-            margin: 0 0 12px 0;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--color-text-secondary);
-        }
-
-        .info-box {
-            background: var(--color-bg);
-            padding: 12px;
-            border-radius: var(--border-radius-sm);
-            font-size: 12px;
-            line-height: 1.6;
-        }
-
-        .info-box p {
-            margin: 4px 0;
+        #layout-mode-select:focus {
+            border-color: var(--vermilion);
+            box-shadow: inset 0 -2px 0 0 var(--vermilion);
         }
     </style>
 </head>
@@ -119,14 +69,15 @@
                 </div>
                 
                 <div class="header-center">
-                    <h1 id="header-title">{{ album_title }}</h1>
+                    <h1 id="header-title"><span class="ornament">·</span>{{ album_title }}</h1>
                     <span class="page-indicator">
-                        <span data-i18n="header.page_indicator">Página</span> <span id="current-page-num">1</span> / <span id="total-pages">{{ total_pages }}</span>
+                        <span data-i18n="header.page_indicator">Página</span>&nbsp;<span id="current-page-num">1</span><span class="slash">&nbsp;/&nbsp;</span><span id="total-pages">{{ total_pages }}</span>
                     </span>
                 </div>
                 
                 <div class="header-right">
                     <button id="open-folder-btn" class="btn btn-secondary" onclick="openAnotherFolder()" data-i18n="header.open_folder">📁 Abrir carpeta</button>
+                    <button id="regenerate-album-header-btn" class="btn btn-secondary">🔄 Regenerar Álbum</button>
                     <button id="lang-btn" onclick="toggleLanguage()" title="Toggle language" style="padding: 8px 12px; background: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); cursor: pointer; font-weight: 600;">ES</button>
                     <button id="debug-btn" class="btn btn-secondary" data-i18n-title="header.debug">{ }</button>
                     <button id="undo-btn" class="btn btn-secondary" disabled data-i18n="header.undo">↶ Deshacer</button>
@@ -147,213 +98,156 @@
                  TAB 1: SOURCE PHOTOS MODE
                  ═══════════════════════════════════════════════════════════════════════════ -->
             <div class="tab-content" id="tab-source-content">
-                
-                <!-- Event Folders Navigator (left edge) -->
-                <div id="event-panel" class="page-panel collapsed">
+
+                <!-- Event Folders Navigator (left, resizable) -->
+                <div id="event-panel" class="page-panel resizable-panel">
                     <div class="page-panel-topbar">
-                        <button id="event-panel-toggle" class="page-panel-toggle-btn" data-i18n-title="source.navigator_title" title="Navegador de carpetas de evento">
-                            <span class="hamburger-icon">
-                                <span></span>
-                                <span></span>
-                                <span></span>
-                            </span>
-                        </button>
                         <span class="page-panel-label" data-i18n="source.navigator_label">Eventos</span>
                     </div>
                     <div class="page-panel-inner">
                         <div id="event-list" class="page-list"></div>
                     </div>
+                    <div class="panel-resize-handle"></div>
                 </div>
 
-                <!-- Sidebar for Source Mode -->
-                <aside class="sidebar">
-                    <!-- Info Section -->
-                    <div class="sidebar-section sidebar-event-info">
-                        <h3 data-i18n="source.section_info">Info</h3>
-                        <div class="info-box">
-                            <p><strong data-i18n="source.info_event">Evento:</strong> <span id="source-event-name">-</span></p>
-                            <p><strong data-i18n="source.info_photos">Fotos:</strong> <span id="source-photo-count">0</span></p>
-                        </div>
+                <!-- Right area: action bar on top, then sidebar + viewer -->
+                <div class="tab-main">
+                    <div class="action-bar" id="source-action-bar">
+                        <button id="rename-event-btn" class="btn btn-secondary">✏️ Renombrar Evento</button>
+                        <button id="delete-event-btn" class="btn btn-danger">🗑️ Borrar Evento</button>
+                        <div style="flex:1"></div>
+                        <button id="toggle-event-completed-btn" class="btn btn-secondary" title="Marcar evento como completado (tecla C)">✅ Completado</button>
                     </div>
+                    <div class="tab-body">
+                        <!-- Photo strip sidebar -->
+                        <aside class="sidebar" id="source-sidebar" style="position: relative;">
+                            <div class="sidebar-section sidebar-photos">
+                                <h3 data-i18n="source.section_photos">Fotos del Evento</h3>
+                                <div id="source-photo-list" class="photo-list"></div>
+                            </div>
+                            <div class="sidebar-section sidebar-photos" style="border-top: 1px solid var(--color-border); padding: 12px; flex-grow: 0;">
+                                <button id="delete-source-photo-btn" class="btn btn-danger btn-block" disabled data-i18n="source.delete_photo">
+                                    🗑️ Borrar Foto
+                                </button>
+                            </div>
+                            <div class="panel-resize-handle"></div>
+                        </aside>
 
-                    <!-- Event Name Section -->
-                    <div class="sidebar-section sidebar-event-info">
-                        <h3 data-i18n="source.event_name">Nombre de Evento</h3>
-                        <input 
-                            type="text" 
-                            id="event-name-input" 
-                            class="form-input" 
-                            data-i18n-placeholder="source.event_name_placeholder"
-                            placeholder="Nombre del evento"
-                        />
-                        <button id="rename-event-btn" class="btn btn-secondary btn-block" data-i18n="source.rename_event">
-                            ✏️ Renombrar Evento
-                        </button>
+                        <!-- Image viewer -->
+                        <main class="preview-area">
+                            <div class="preview-container" style="display: flex; align-items: center; justify-content: center; background: var(--color-bg-secondary);">
+                                <img
+                                    id="source-image-viewer"
+                                    src=""
+                                    data-i18n-title="image.source_preview"
+                                    alt="Vista previa de foto"
+                                    style="max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--border-radius-md); box-shadow: var(--shadow-md);"
+                                />
+                            </div>
+                        </main>
                     </div>
-
-                    <!-- Actions Section -->
-                    <div class="sidebar-section sidebar-event-info">
-                        <h3 data-i18n="source.section_actions">Acciones</h3>
-                        <button id="regenerate-album-btn" class="btn btn-primary btn-block" data-i18n="source.regenerate_album">
-                            🔄 Regenerar Álbum
-                        </button>
-                        <button id="delete-event-btn" class="btn btn-danger btn-block" data-i18n="source.delete_event">
-                            🗑️ Borrar Evento Completo
-                        </button>
-                    </div>
-
-                    <!-- Photos Section -->
-                    <div class="sidebar-section sidebar-photos">
-                        <h3 data-i18n="source.section_photos">Fotos del Evento</h3>
-                        <div id="source-photo-list" class="photo-list">
-                            <!-- Source photos will be loaded here -->
-                        </div>
-                    </div>
-
-                    <!-- Delete Photo Button -->
-                    <div class="sidebar-section sidebar-photos" style="border-top: 1px solid var(--color-border); padding: 12px; flex-grow: 0;">
-                        <button id="delete-source-photo-btn" class="btn btn-danger btn-block" disabled data-i18n="source.delete_photo">
-                            🗑️ Borrar Foto
-                        </button>
-                    </div>
-                </aside>
-
-                <!-- Image Viewer -->
-                <main class="preview-area">
-                    <div class="preview-container" style="display: flex; align-items: center; justify-content: center; background: var(--color-bg-secondary);">
-                        <img 
-                            id="source-image-viewer" 
-                            src="" 
-                            data-i18n-title="image.source_preview"
-                            alt="Vista previa de foto"
-                            style="max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--border-radius-md); box-shadow: var(--shadow-md);"
-                        />
-                    </div>
-                </main>
+                </div>
             </div>
 
             <!-- ═══════════════════════════════════════════════════════════════════════════
                  TAB 2: ALBUM EDITION MODE
                  ═══════════════════════════════════════════════════════════════════════════ -->
             <div class="tab-content active" id="tab-album-content">
-                
-                <!-- Page Navigator Panel (collapsible, left edge) -->
-                <div id="page-panel" class="page-panel collapsed">
+
+                <!-- Page Navigator Panel (left, resizable) -->
+                <div id="page-panel" class="page-panel resizable-panel">
                     <div class="page-panel-topbar">
-                        <button id="page-panel-toggle" class="page-panel-toggle-btn" data-i18n-title="album.navigator_title" title="Navegador de páginas">
-                            <span class="hamburger-icon">
-                                <span></span>
-                                <span></span>
-                                <span></span>
-                            </span>
-                        </button>
                         <span class="page-panel-label" data-i18n="album.navigator_label">Páginas</span>
                     </div>
                     <div class="page-panel-inner">
                         <div id="page-list" class="page-list"></div>
                     </div>
+                    <div class="panel-resize-handle"></div>
                 </div>
 
-                <!-- Sidebar -->
-                <aside class="sidebar">
-                    <!-- Info Section -->
-                    <div class="sidebar-section sidebar-page-info">
-                        <h3 data-i18n="album.section_info">Info</h3>
-                        <div class="info-box">
-                            <p><strong data-i18n="album.info_mode">Modo:</strong> <span id="album-layout-mode">-</span></p>
-                            <p><strong data-i18n="album.info_photos">Fotos:</strong> <span id="photo-count">0</span></p>
-                        </div>
+                <!-- Right area: action bar on top, then sidebar + preview -->
+                <div class="tab-main">
+                    <div class="action-bar" id="album-action-bar">
+                        <button id="rename-page-btn" class="btn btn-secondary">✏️ Renombrar Página</button>
+                        <button id="rename-subtitle-btn" class="btn btn-secondary">📝 Renombrar Subtítulo</button>
+                        <button id="layout-mode-btn" class="btn btn-secondary">🎨 Modo Layout</button>
+                        <button id="explode-page-btn" class="btn btn-secondary">💥 Explotar Página en Dos</button>
+                        <button id="delete-page-btn" class="btn btn-danger">🗑️ Borrar Página</button>
+                        <div style="flex:1"></div>
+                        <button id="toggle-page-completed-btn" class="btn btn-secondary" title="Marcar página como completada (tecla C)">✅ Completado</button>
                     </div>
+                    <div class="tab-body">
+                        <!-- Photo strip sidebar -->
+                        <aside class="sidebar" id="album-sidebar" style="position: relative;">
+                            <div class="sidebar-section sidebar-photos">
+                                <h3 data-i18n="album.section_photos">Fotos</h3>
+                                <div id="photo-list" class="photo-list"></div>
+                                <button id="delete-photo-btn" class="btn btn-danger btn-block" disabled data-i18n="album.delete_photo">
+                                    🗑️ Borrar Foto Seleccionada
+                                </button>
+                            </div>
+                            <div class="panel-resize-handle"></div>
+                        </aside>
 
-                    <!-- Page Title Section -->
-                    <div class="sidebar-section sidebar-page-info">
-                        <h3 data-i18n="album.page_title">Título de Página</h3>
-                        <input 
-                            type="text" 
-                            id="page-title" 
-                            class="form-input" 
-                            data-i18n-placeholder="album.page_title_placeholder"
-                            placeholder="Título de la página"
-                        />
-                        <button id="update-title-btn" class="btn btn-secondary btn-block" data-i18n="album.update_title">
-                            ✏️ Actualizar Título
-                        </button>
+                        <!-- PDF preview -->
+                        <main class="preview-area">
+                            <div class="preview-container">
+                                <iframe
+                                    id="pdf-preview"
+                                    class="pdf-iframe"
+                                    data-i18n-title="image.page_preview"
+                                    title="Vista previa de página"
+                                ></iframe>
+                            </div>
+                            <div id="loading-overlay" class="loading-overlay" style="display: none;">
+                                <div class="loading-spinner"></div>
+                                <p data-i18n="loading.preview">Generando vista previa...</p>
+                            </div>
+                        </main>
                     </div>
+                </div>
+            </div>
 
-                    <!-- Layout Mode Section -->
-                    <div class="sidebar-section sidebar-page-info">
-                        <h3 data-i18n="album.layout_mode">Modo de Layout</h3>
-                        <select id="layout-mode-select" class="form-input">
-                            <option value="mesa_de_luz" data-i18n="album.layout_mesa">Mesa de Luz</option>
-                            <option value="grid_compacto" data-i18n="album.layout_grid">Grid Compacto</option>
-                            <option value="hibrido" data-i18n="album.layout_hibrido">Híbrido</option>
-                        </select>
-                        <button id="apply-layout-mode-btn" class="btn btn-secondary btn-block" data-i18n="album.apply_layout">
-                            ⚙️ Aplicar Modo
-                        </button>
+            <!-- Layout Mode Modal -->
+            <div id="layout-mode-modal" class="modal hidden">
+                <div class="modal-content">
+                    <h3>Seleccionar modo de layout</h3>
+                    <select id="layout-mode-select" class="form-input">
+                        <option value="mesa_de_luz">Mesa de Luz</option>
+                        <option value="grid_compacto">Grid Compacto</option>
+                        <option value="hibrido">Híbrido</option>
+                    </select>
+                    <div class="modal-actions">
+                        <button id="apply-layout-mode-btn" class="btn btn-primary">Aplicar</button>
+                        <button id="cancel-layout-mode-btn" class="btn btn-secondary">Cancelar</button>
                     </div>
+                </div>
+            </div>
 
-                    <!-- Photo Caption Section -->
-                    <div class="sidebar-section sidebar-page-info">
-                        <h3 data-i18n="album.photo_caption">Subtítulo de Foto</h3>
-                        <textarea 
-                            id="photo-caption" 
-                            class="form-textarea" 
-                            data-i18n-placeholder="album.photo_caption_placeholder"
-                            placeholder="Escribe un subtítulo para la foto seleccionada"
-                            rows="3"
-                            disabled
-                        ></textarea>
-                        <button id="update-caption-btn" class="btn btn-secondary btn-block" disabled data-i18n="album.update_caption">
-                            ✏️ Actualizar Subtítulo
-                        </button>
+            <!-- Album Generation Progress Modal -->
+            <div id="generation-modal" class="modal hidden">
+                <div class="modal-content generation-modal-content">
+                    <h3 id="gen-modal-title">Generando álbum…</h3>
+                    <p id="gen-modal-step" class="gen-step-label">Iniciando…</p>
+                    <div class="gen-progress-bar-track">
+                        <div id="gen-progress-bar" class="gen-progress-bar-fill" style="width:0%"></div>
                     </div>
+                    <p id="gen-modal-counter" class="gen-counter">0 / 0</p>
+                    <p id="gen-modal-filename" class="gen-filename"></p>
+                </div>
+            </div>
 
-                    <!-- Actions Section -->
-                    <div class="sidebar-section sidebar-page-info">
-                        <h3 data-i18n="album.section_actions">Acciones</h3>
-                        <button id="regenerate-btn" class="btn btn-primary btn-block" data-i18n="album.regenerate_preview">
-                            🔄 Regenerar Vista Previa
-                        </button>
-                        <button id="add-page-btn" class="btn btn-secondary btn-block" data-i18n="album.add_page">
-                            + Añadir Página Después
-                        </button>
-                        <button id="delete-page-btn" class="btn btn-danger btn-block" data-i18n="album.delete_page">
-                            🗑️ Borrar Página Completa
-                        </button>
+            <!-- Generic Dialog Modal (for prompt/confirm) -->
+            <div id="generic-dialog" class="modal hidden">
+                <div class="modal-content">
+                    <h3 id="generic-dialog-title"></h3>
+                    <p id="generic-dialog-message" class="dialog-message"></p>
+                    <input id="generic-dialog-input" class="form-input" type="text" />
+                    <div class="modal-actions">
+                        <button id="generic-dialog-cancel" class="btn btn-secondary">Cancelar</button>
+                        <button id="generic-dialog-ok" class="btn btn-primary">Aceptar</button>
                     </div>
-
-                    <!-- Photos Section -->
-                    <div class="sidebar-section sidebar-photos">
-                        <h3 data-i18n="album.section_photos">Fotos</h3>
-                        <div id="photo-list" class="photo-list">
-                            <!-- Photos will be loaded here via JavaScript -->
-                        </div>
-                    </div>
-
-                    <!-- Delete Photo Button -->
-                    <div class="sidebar-section sidebar-photos" style="border-top: 1px solid var(--color-border); padding: 12px; flex-grow: 0;">
-                        <button id="delete-photo-btn" class="btn btn-danger btn-block" disabled data-i18n="album.delete_photo">
-                            🗑️ Borrar Foto Seleccionada
-                        </button>
-                    </div>
-                </aside>
-
-                <!-- Preview Area -->
-                <main class="preview-area">
-                    <div class="preview-container">
-                        <iframe 
-                            id="pdf-preview" 
-                            class="pdf-iframe"
-                            data-i18n-title="image.page_preview"
-                            title="Vista previa de página"
-                        ></iframe>
-                    </div>
-                    <div id="loading-overlay" class="loading-overlay" style="display: none;">
-                        <div class="loading-spinner"></div>
-                        <p data-i18n="loading.preview">Generando vista previa...</p>
-                    </div>
-                </main>
+                </div>
             </div>
 
         </div>
@@ -364,21 +258,28 @@
         const PAGES_DATA = {{ pages|tojson }};
         const ALBUM_TITLE = "{{ album_title }}";
         const TOTAL_PAGES = {{ total_pages }};
+        const HAS_PAGES = {{ has_pages | tojson }};
     </script>
 
     <!-- Internationalization (must load first) -->
     <script src="{{ url_for('static', filename='js/i18n.js') }}"></script>
-    
+
     <!-- Common utilities -->
     <script src="{{ url_for('static', filename='js/common.js') }}"></script>
-    
+
+    <!-- Dialog system (modals and toasts) -->
+    <script src="{{ url_for('static', filename='js/dialogs.js') }}"></script>
+
     <!-- Album mode scripts -->
     <script src="{{ url_for('static', filename='js/album.js') }}"></script>
-    
+
     <!-- Source mode scripts -->
     <script src="{{ url_for('static', filename='js/source.js') }}"></script>
-    
+
     <!-- App controller -->
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+
+    <!-- Toast container -->
+    <div id="toast-container" class="toast-container"></div>
 </body>
 </html>

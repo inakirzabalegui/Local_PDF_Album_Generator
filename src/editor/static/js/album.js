@@ -53,7 +53,7 @@ function setupAlbumEventListeners() {
     document.getElementById('layout-mode-btn')?.addEventListener('click', openLayoutModeModal);
     document.getElementById('apply-layout-mode-btn')?.addEventListener('click', applyLayoutModeFromModal);
     document.getElementById('cancel-layout-mode-btn')?.addEventListener('click', closeLayoutModeModal);
-    document.getElementById('undo-btn')?.addEventListener('click', performUndo);
+    document.getElementById('toggle-page-completed-btn')?.addEventListener('click', togglePageCompleted);
 
     // Keyboard shortcuts
     document.addEventListener('keydown', handleAlbumKeyboard);
@@ -93,7 +93,16 @@ function handleAlbumKeyboard(e) {
                 navigatePhotoSelection(1);
             }
         } else if (e.key === 'd' || e.key === 'D') {
-            if (selectedPhotoName) deleteSelectedPhoto();
+            if (selectedPhotoName) {
+                e.preventDefault();
+                deleteSelectedPhoto();
+            }
+        } else if (e.key === 'c' || e.key === 'C') {
+            e.preventDefault();
+            togglePageCompleted();
+        } else if (e.key === 'r' || e.key === 'R') {
+            e.preventDefault();
+            renamePage();
         }
     }
     
@@ -128,9 +137,14 @@ async function loadPage(index) {
         
         if (data.success) {
             log('INFO', 'LOAD_PAGE_SUCCESS', { pageId: page.id, photoCount: data.page.photo_count });
+            // Sync completed flag from server response into PAGES_DATA
+            if (typeof data.page.completed === 'boolean') {
+                PAGES_DATA[index].completed = data.page.completed;
+            }
             renderPageDetails(data.page);
             loadPreview(page.id);
             updatePagePanelActiveItem(index);
+            syncPageCompletedUI(index);
         } else {
             log('ERROR', 'LOAD_PAGE_FAILED', { error: data.error });
             showToast(t('error.load_page') + data.error, { type: 'error' });
@@ -318,6 +332,13 @@ async function deleteSelectedPhoto() {
                     trash_token: data.trash_token,
                 });
             }
+
+            const previewContainer = document.querySelector('#tab-album-content .preview-container');
+            const itemEl = document.querySelector(
+                `#photo-list .photo-item[data-filename="${CSS.escape(selectedPhotoName)}"]`
+            );
+            await playDeleteFeedback({ viewerEl: previewContainer, itemEl });
+
             selectedPhotoName = null;
             document.getElementById('delete-photo-btn').disabled = true;
 
@@ -711,6 +732,59 @@ async function updatePhotoCaption() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Completed State
+// ═══════════════════════════════════════════════════════════════════════════
+
+function applyCompletedClass(itemEl, completed) {
+    if (!itemEl) return;
+    itemEl.classList.toggle('is-completed', completed);
+}
+
+function updateCompletedButton(btnEl, completed) {
+    if (!btnEl) return;
+    if (completed) {
+        btnEl.textContent = '↩️ Marcar pendiente';
+        btnEl.classList.add('btn-completed-active');
+        btnEl.classList.remove('btn-secondary');
+    } else {
+        btnEl.textContent = '✅ Completado';
+        btnEl.classList.remove('btn-completed-active');
+        btnEl.classList.add('btn-secondary');
+    }
+}
+
+async function togglePageCompleted() {
+    if (PAGES_DATA.length === 0) return;
+
+    const page = PAGES_DATA[currentPageIndex];
+    const newCompleted = !page.completed;
+
+    try {
+        const response = await fetch(`/api/page/${page.id}/completed`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ completed: newCompleted }),
+        });
+        const data = await response.json();
+        if (data.success) {
+            page.completed = newCompleted;
+            const itemEl = document.querySelector(`#page-list .page-list-item[data-index="${currentPageIndex}"]`);
+            applyCompletedClass(itemEl, newCompleted);
+            updateCompletedButton(document.getElementById('toggle-page-completed-btn'), newCompleted);
+        }
+    } catch (error) {
+        log('ERROR', 'TOGGLE_PAGE_COMPLETED_ERROR', { error: error.message });
+    }
+}
+
+function syncPageCompletedUI(index) {
+    const page = PAGES_DATA[index];
+    if (!page) return;
+    const btn = document.getElementById('toggle-page-completed-btn');
+    updateCompletedButton(btn, page.completed);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Undo System
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -896,8 +970,17 @@ function initPagePanel() {
         titleSpan.textContent = page.title || `Página ${page.number}`;
         titleSpan.id = `page-panel-title-${index}`;
 
+        const dot = document.createElement('span');
+        dot.className = 'completed-dot';
+        dot.title = 'Revisado';
+
         item.appendChild(numSpan);
         item.appendChild(titleSpan);
+        item.appendChild(dot);
+
+        if (page.completed) {
+            item.classList.add('is-completed');
+        }
 
         item.addEventListener('click', () => navigateToPageFromPanel(index));
 

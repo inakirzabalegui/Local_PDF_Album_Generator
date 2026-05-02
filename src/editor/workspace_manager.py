@@ -19,6 +19,7 @@ from src.workspace.config import (
     write_page_configs,
 )
 from src.render.pdf_generator import generate_single_page_pdf
+from src.editor.trash import move_to_trash, TrashToken
 
 logger = logging.getLogger("album.editor")
 
@@ -110,51 +111,45 @@ def reorder_photos(page_folder: Path, new_order: list[str]) -> bool:
         return False
 
 
-def delete_photo(page_folder: Path, filename: str) -> bool:
-    """Delete a photo from the page and update YAML.
-    
-    Args:
-        page_folder: Path to the page folder
-        filename: Name of the photo file to delete
-        
-    Returns:
-        True if successful, False otherwise
+def delete_photo(page_folder: Path, filename: str, workspace_root: Path) -> TrashToken | None:
+    """Move a photo into the workspace trash and update the page YAML.
+
+    Returns a TrashToken on success so the caller can build an undo entry, or
+    None if the photo was not found / the operation failed.
     """
     try:
         photo_path = page_folder / filename
         if not photo_path.exists():
             logger.error(f"Photo not found: {filename}")
-            return False
-        
-        # Delete the photo
-        photo_path.unlink()
-        logger.info(f"Deleted photo: {filename}")
-        
+            return None
+
+        token = move_to_trash(workspace_root, photo_path)
+        logger.info(f"Trashed photo: {filename} (token {token.token_id})")
+
         # Update page_config.yaml photo_count
         config_path = page_folder / "page_config.yaml"
         if config_path.exists():
             with open(config_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f) or {}
-            
-            # Get current image count
+
             remaining_images = [
                 p for p in page_folder.iterdir()
                 if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
             ]
             data['photo_count'] = len(remaining_images)
-            
+
             # Ensure photo_captions exists so it's not lost on rewrite
             if 'photo_captions' not in data:
                 data['photo_captions'] = {}
-            
+
             with open(config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
-        
-        return True
-        
+
+        return token
+
     except Exception as e:
         logger.error(f"Failed to delete photo: {e}")
-        return False
+        return None
 
 
 def delete_page(workspace: Path, page_folder: Path) -> bool:
@@ -409,6 +404,7 @@ def get_page_info(page_folder: Path) -> dict:
             'is_cover': data.get('is_cover', False),
             'is_backcover': data.get('is_backcover', False),
             'photo_captions': data.get('photo_captions', {}),
+            'completed': bool(data.get('completed', False)),
         }
         
     except Exception as e:
@@ -514,3 +510,131 @@ def move_photos(from_folder: Path, to_folder: Path, filenames: list[str]) -> boo
                 shutil.move(str(f), str(from_folder / f.name))
             temp_dir.rmdir()
         return False
+
+
+def explode_page(workspace: Path, page_id: str) -> dict:
+    """Split a page into two: first ceil(n/2) photos stay, rest move to a new page right after.
+
+    The new page inherits section_titles, layout_mode, override_background_color and gets a
+    fresh layout_seed. featured_photos, hero_photos, and photo_captions follow their photos.
+    The minimum-photos constraint is intentionally ignored (user decides).
+    """
+    import math
+    import random as _random
+
+    page_folder = workspace / page_id
+    config_path = page_folder / "page_config.yaml"
+
+    if not page_folder.exists() or not config_path.exists():
+        return {'success': False, 'error': 'Página no encontrada'}
+
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            orig_data = yaml.safe_load(f) or {}
+
+        if orig_data.get('is_cover') or orig_data.get('is_backcover'):
+            return {'success': False, 'error': 'No se puede explotar la portada o contraportada'}
+
+        images = sorted(
+            p.name for p in page_folder.iterdir()
+            if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
+        )
+        n = len(images)
+
+        if n < 2:
+            return {'success': False, 'error': 'Se necesitan al menos 2 fotos para explotar una página'}
+
+        split = math.ceil(n / 2)
+        stay = images[:split]
+        move = images[split:]
+
+        orig_page_number = orig_data.get('page_number', 1)
+        orig_featured = set(orig_data.get('featured_photos') or [])
+        orig_hero = set(orig_data.get('hero_photos') or [])
+        orig_captions = dict(orig_data.get('photo_captions') or {})
+        orig_bg = orig_data.get('override_background_color')
+
+        # Create new page folder (inherits section_titles, layout_mode, new seed)
+        new_page_info = create_page_after(workspace, orig_page_number)
+        if not new_page_info:
+            return {'success': False, 'error': 'Error al crear la nueva página'}
+
+        new_folder = workspace / new_page_info['folder_name']
+        new_config_path = new_folder / "page_config.yaml"
+
+        # Propagate override_background_color if set
+        if orig_bg is not None:
+            with open(new_config_path, 'r', encoding='utf-8') as f:
+                new_data = yaml.safe_load(f) or {}
+            new_data['override_background_color'] = orig_bg
+            with open(new_config_path, 'w', encoding='utf-8') as f:
+                yaml.dump(new_data, f, allow_unicode=True, default_flow_style=False)
+
+        # Move photos with staging to avoid name collisions, building rename_map
+        temp_dir = page_folder / "_explode_tmp"
+        temp_dir.mkdir(exist_ok=True)
+        rename_map: dict[str, str] = {}
+
+        try:
+            for seq, filename in enumerate(move, start=1):
+                src = page_folder / filename
+                ext = src.suffix.lower()
+                if ext not in VALID_IMAGE_EXTENSIONS:
+                    ext = '.jpg'
+                new_name = f"img_{seq:03d}{ext}"
+                rename_map[filename] = new_name
+                shutil.move(str(src), str(temp_dir / new_name))
+
+            for tmp_name in (rename_map[fn] for fn in move):
+                shutil.move(str(temp_dir / tmp_name), str(new_folder / tmp_name))
+
+            temp_dir.rmdir()
+        except Exception:
+            # Restore files from temp back to original page on failure
+            for f in temp_dir.iterdir():
+                shutil.move(str(f), str(page_folder / f.name))
+            temp_dir.rmdir()
+            raise
+
+        # Update original page YAML
+        moved_set = set(move)
+        orig_data['photo_count'] = len(stay)
+        orig_data['featured_photos'] = [p for p in (orig_data.get('featured_photos') or []) if p not in moved_set]
+        orig_data['hero_photos'] = [p for p in (orig_data.get('hero_photos') or []) if p not in moved_set]
+        orig_data['photo_captions'] = {k: v for k, v in orig_captions.items() if k not in moved_set}
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(orig_data, f, allow_unicode=True, default_flow_style=False)
+
+        # Update new page YAML
+        with open(new_config_path, 'r', encoding='utf-8') as f:
+            new_data = yaml.safe_load(f) or {}
+        new_data['photo_count'] = len(move)
+        new_data['featured_photos'] = [rename_map[p] for p in move if p in orig_featured]
+        new_data['hero_photos'] = [rename_map[p] for p in move if p in orig_hero]
+        new_data['photo_captions'] = {rename_map[p]: v for p, v in orig_captions.items() if p in moved_set}
+        with open(new_config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(new_data, f, allow_unicode=True, default_flow_style=False)
+
+        logger.info(f"Exploded {page_id}: {len(stay)} photos stay, {len(move)} moved to {new_folder.name}")
+
+        return {
+            'success': True,
+            'original_page': {
+                'id': page_id,
+                'number': orig_page_number,
+                'photo_count': len(stay),
+                'layout_mode': orig_data.get('layout_mode', 'mesa_de_luz'),
+                'section_titles': orig_data.get('section_titles', []),
+            },
+            'new_page': {
+                'id': new_folder.name,
+                'number': new_data.get('page_number', orig_page_number),
+                'photo_count': len(move),
+                'layout_mode': new_data.get('layout_mode', 'mesa_de_luz'),
+                'section_titles': new_data.get('section_titles', []),
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to explode page {page_id}: {e}")
+        return {'success': False, 'error': str(e)}

@@ -30,6 +30,7 @@ function setupSourceEventListeners() {
     document.getElementById('delete-source-photo-btn')?.addEventListener('click', deleteSourcePhoto);
     document.getElementById('rename-event-btn')?.addEventListener('click', renameEvent);
     document.getElementById('control-event-btn')?.addEventListener('click', deleteEvent);
+    document.getElementById('toggle-event-completed-btn')?.addEventListener('click', toggleEventCompleted);
 
     document.addEventListener('keydown', handleSourceKeyboard);
 }
@@ -76,7 +77,16 @@ function handleSourceKeyboard(e) {
                 navigateSourcePhotoSelection(1);
             }
         } else if (e.key === 'd' || e.key === 'D') {
-            if (selectedSourcePhoto) deleteSourcePhoto();
+            if (selectedSourcePhoto) {
+                e.preventDefault();
+                deleteSourcePhoto();
+            }
+        } else if (e.key === 'c' || e.key === 'C') {
+            e.preventDefault();
+            toggleEventCompleted();
+        } else if (e.key === 'r' || e.key === 'R') {
+            e.preventDefault();
+            renameEvent();
         }
     }
 }
@@ -135,28 +145,39 @@ async function loadEventFolders() {
 }
 
 // Load a specific event folder
-async function loadEvent(index) {
+async function loadEvent(index, photoSelectIndex = 0) {
     if (index < 0 || index >= eventFolders.length) {
         log('WARN', 'LOAD_EVENT_INVALID', { index });
         return;
     }
-    
+
     currentEventIndex = index;
     currentEventFolder = eventFolders[index];
-    
+
     log('INFO', 'LOAD_EVENT_START', { folder: currentEventFolder.name });
-    
+
     try {
         const response = await fetch(`/api/source/folder/${currentEventFolder.name}`);
         const data = await response.json();
-        
+
         if (data.success) {
             const event = data.folder;
-            currentEventPhotos = event.photos || [];
-            
-            log('INFO', 'LOAD_EVENT_SUCCESS', { photoCount: currentEventPhotos.length });
-            renderSourceEventDetails(event);
+            const sections = Array.isArray(event.sections) && event.sections.length
+                ? event.sections
+                : [{ title: '', subfolder: '', photos: event.photos || [] }];
+            currentEventPhotos = sections.flatMap(s =>
+                (s.photos || []).map(filename => ({ filename, subfolder: s.subfolder || '' }))
+            );
+
+            log('INFO', 'LOAD_EVENT_SUCCESS', { photoCount: currentEventPhotos.length, sections: sections.length });
+            // Sync completed flag from server into local cache
+            if (typeof event.completed === 'boolean') {
+                eventFolders[index].completed = event.completed;
+                currentEventFolder.completed = event.completed;
+            }
+            renderSourceEventDetails({ ...event, sections }, photoSelectIndex);
             updateEventPanelActiveItem(index);
+            syncEventCompletedUI(currentEventFolder.completed || false);
         } else {
             log('ERROR', 'LOAD_EVENT_FAILED', { error: data.error });
             showToast(t('error.load_event') + data.error, { type: 'error' });
@@ -168,34 +189,54 @@ async function loadEvent(index) {
 }
 
 // Render event details in sidebar
-function renderSourceEventDetails(event) {
+function renderSourceEventDetails(event, photoSelectIndex = 0) {
     const photoList = document.getElementById('source-photo-list');
     if (!photoList) return;
 
     photoList.textContent = '';
 
-    currentEventPhotos.forEach((filename, idx) => {
-        const div = document.createElement('div');
-        div.className = 'photo-item';
-        div.dataset.filename = filename;
-        div.dataset.index = idx;
+    let runningIdx = 0;
+    (event.sections || []).forEach((section) => {
+        const photos = section.photos || [];
+        if (!photos.length) return;
 
-        const dragHandle = document.createElement('span');
-        dragHandle.className = 'drag-handle';
-        dragHandle.textContent = '☰';
+        if (section.title) {
+            const heading = document.createElement('div');
+            heading.className = 'photo-section-title';
+            heading.textContent = section.title;
+            photoList.appendChild(heading);
+        }
 
-        const span = document.createElement('span');
-        span.className = 'photo-name';
-        span.textContent = filename;
+        const subfolder = section.subfolder || '';
+        photos.forEach((filename) => {
+            const idx = runningIdx++;
+            const div = document.createElement('div');
+            div.className = 'photo-item';
+            div.dataset.filename = filename;
+            div.dataset.subfolder = subfolder;
+            div.dataset.index = idx;
 
-        div.appendChild(dragHandle);
-        div.appendChild(span);
-        div.addEventListener('click', (e) => selectSourcePhoto(filename, e.target.closest('.photo-item')));
+            // Subfolder photos are not draggable (move-to-event only supports top-level)
+            if (!subfolder) {
+                const dragHandle = document.createElement('span');
+                dragHandle.className = 'drag-handle';
+                dragHandle.textContent = '☰';
+                div.appendChild(dragHandle);
+            }
 
-        photoList.appendChild(div);
+            const span = document.createElement('span');
+            span.className = 'photo-name';
+            span.textContent = filename;
+            div.appendChild(span);
+
+            div.addEventListener('click', (e) =>
+                selectSourcePhoto(filename, e.target.closest('.photo-item'), subfolder));
+
+            photoList.appendChild(div);
+        });
     });
 
-    // In-memory reorder via SortableJS
+    // In-memory reorder via SortableJS (only top-level photos can drag)
     if (sourceSortableInstance) {
         sourceSortableInstance.destroy();
     }
@@ -203,10 +244,11 @@ function renderSourceEventDetails(event) {
         animation: 150,
         handle: '.drag-handle',
         ghostClass: 'sortable-ghost',
+        filter: '.photo-section-title',
         setData(dataTransfer, dragEl) {
-            // Expose dragged filename(s) so event-panel drop targets can read them
             const filename = dragEl.dataset.filename;
             const selected = Array.from(photoList.querySelectorAll('.photo-item.selected'))
+                .filter(el => !el.dataset.subfolder)
                 .map(el => el.dataset.filename);
             draggingSourceFilenames = selected.includes(filename) ? selected : [filename];
             dataTransfer.setData('text/plain', JSON.stringify(draggingSourceFilenames));
@@ -217,34 +259,47 @@ function renderSourceEventDetails(event) {
                 draggingSourceFilenames = [];
                 return;
             }
-            // Sync in-memory order from DOM
             currentEventPhotos = Array.from(photoList.querySelectorAll('.photo-item'))
-                .map(el => el.dataset.filename);
+                .map(el => ({
+                    filename: el.dataset.filename,
+                    subfolder: el.dataset.subfolder || '',
+                }));
             draggingSourceFilenames = [];
         },
     });
 
     if (currentEventPhotos.length > 0) {
-        selectSourcePhoto(currentEventPhotos[0], document.querySelector('#source-photo-list .photo-item'));
+        const idx = Math.min(Math.max(photoSelectIndex, 0), currentEventPhotos.length - 1);
+        const items = photoList.querySelectorAll('.photo-item');
+        const target = items[idx];
+        const photo = currentEventPhotos[idx];
+        if (target && photo) {
+            selectSourcePhoto(photo.filename, target, photo.subfolder);
+            target.scrollIntoView({ block: 'nearest' });
+        }
     }
 }
 
 // Select a source photo and display it
-function selectSourcePhoto(filename, element) {
+function selectSourcePhoto(filename, element, subfolder = '') {
     document.querySelectorAll('#source-photo-list .photo-item').forEach(item => {
         item.classList.remove('selected');
     });
-    
+
     if (element) {
         element.classList.add('selected');
+        if (typeof element.dataset.subfolder === 'string') {
+            subfolder = element.dataset.subfolder;
+        }
     }
-    
-    selectedSourcePhoto = filename;
-    
+
+    selectedSourcePhoto = { filename, subfolder: subfolder || '' };
+
     document.getElementById('delete-source-photo-btn').disabled = false;
-    
+
     // Load and display the image
-    const imagePath = encodeURIComponent(currentEventFolder.path + '/' + filename);
+    const relPath = subfolder ? `${subfolder}/${filename}` : filename;
+    const imagePath = encodeURIComponent(currentEventFolder.path + '/' + relPath);
     const img = document.getElementById('source-image-viewer');
     if (img) {
         img.src = `/api/source/image?path=${imagePath}`;
@@ -257,11 +312,16 @@ async function deleteSourcePhoto() {
         return;
     }
 
+    const { filename, subfolder } = selectedSourcePhoto;
+    const deletedIndex = currentEventPhotos.findIndex(
+        p => p.filename === filename && (p.subfolder || '') === (subfolder || '')
+    );
+
     try {
         const response = await fetch(`/api/source/folder/${currentEventFolder.name}/photo`, {
             method: 'DELETE',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ filename: selectedSourcePhoto })
+            body: JSON.stringify({ filename, subfolder: subfolder || '' })
         });
 
         const data = await response.json();
@@ -274,6 +334,13 @@ async function deleteSourcePhoto() {
                     event_index: currentEventIndex,
                 });
             }
+
+            const viewerEl = document.querySelector('#tab-source-content .preview-container');
+            const itemEl = document.querySelector(
+                `#source-photo-list .photo-item[data-filename="${CSS.escape(filename)}"]`
+            );
+            await playDeleteFeedback({ viewerEl, itemEl });
+
             selectedSourcePhoto = null;
         } else {
             log('ERROR', 'DELETE_SOURCE_PHOTO_FAILED', { error: data.error });
@@ -284,7 +351,7 @@ async function deleteSourcePhoto() {
         showToast(t('error.connection_delete_source_photo'), { type: 'error' });
     }
 
-    await loadEvent(currentEventIndex);
+    await loadEvent(currentEventIndex, deletedIndex >= 0 ? deletedIndex : 0);
 }
 
 // Rename event folder
@@ -528,6 +595,48 @@ function navigateSourcePhotoSelection(delta) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Completed State
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function toggleEventCompleted() {
+    if (!currentEventFolder) return;
+
+    const newCompleted = !currentEventFolder.completed;
+
+    try {
+        const response = await fetch(`/api/source/folder/${currentEventFolder.name}/completed`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ completed: newCompleted }),
+        });
+        const data = await response.json();
+        if (data.success) {
+            currentEventFolder.completed = newCompleted;
+            eventFolders[currentEventIndex].completed = newCompleted;
+            const itemEl = document.querySelector(`#event-list .page-list-item[data-index="${currentEventIndex}"]`);
+            if (itemEl) itemEl.classList.toggle('is-completed', newCompleted);
+            syncEventCompletedUI(newCompleted);
+        }
+    } catch (error) {
+        log('ERROR', 'TOGGLE_EVENT_COMPLETED_ERROR', { error: error.message });
+    }
+}
+
+function syncEventCompletedUI(completed) {
+    const btn = document.getElementById('toggle-event-completed-btn');
+    if (!btn) return;
+    if (completed) {
+        btn.textContent = '↩️ Marcar pendiente';
+        btn.classList.add('btn-completed-active');
+        btn.classList.remove('btn-secondary');
+    } else {
+        btn.textContent = '✅ Completado';
+        btn.classList.remove('btn-completed-active');
+        btn.classList.add('btn-secondary');
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Event Navigator Panel
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -553,8 +662,17 @@ function initEventPanel() {
         countSpan.id = `event-count-${index}`;
         countSpan.textContent = String(event.photo_count || 0);
 
+        const dot = document.createElement('span');
+        dot.className = 'completed-dot';
+        dot.title = 'Revisado';
+
         item.appendChild(countSpan);
         item.appendChild(nameSpan);
+        item.appendChild(dot);
+
+        if (event.completed) {
+            item.classList.add('is-completed');
+        }
 
         item.addEventListener('click', () => loadEvent(index));
 
@@ -622,8 +740,13 @@ async function moveSourcePhotosToEvent(filenames, targetEventIndex) {
             showToast(`${filenames.length} foto(s) movida(s) a "${targetEvent.name}"`, { type: 'success' });
 
             // Update in-memory photo list for current event
-            currentEventPhotos = (data.source_folder.photos || []);
-            renderSourceEventDetails(data.source_folder);
+            const sections = Array.isArray(data.source_folder.sections) && data.source_folder.sections.length
+                ? data.source_folder.sections
+                : [{ title: '', subfolder: '', photos: data.source_folder.photos || [] }];
+            currentEventPhotos = sections.flatMap(s =>
+                (s.photos || []).map(filename => ({ filename, subfolder: s.subfolder || '' }))
+            );
+            renderSourceEventDetails({ ...data.source_folder, sections });
 
             // Update photo count badges
             const srcCount = document.getElementById(`event-count-${currentEventIndex}`);

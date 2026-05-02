@@ -8,12 +8,14 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
+
 if TYPE_CHECKING:
     pass
 
 from src.ingestion.scanner import scan_directory, VALID_EXTENSIONS
 from src.ingestion.sorter import sort_photos
-from src.utils.naming import prettify_folder_name, folder_name_to_slug
+from src.utils.naming import prettify_folder_name, folder_name_to_slug, build_section_title
 from src.workspace.initializer import create_workspace
 from src.workspace.config import write_global_config, write_page_configs, read_global_config
 from src.editor.trash import move_to_trash, TrashToken
@@ -22,6 +24,38 @@ logger = logging.getLogger("album.editor.source")
 
 _regen_lock = threading.Lock()
 _regen_running = False
+
+_META_FILENAME = ".album_meta.yaml"
+
+
+def read_event_completed(folder_path: Path) -> bool:
+    """Read the 'completed' flag from .album_meta.yaml inside an event folder."""
+    meta_path = folder_path / _META_FILENAME
+    if not meta_path.exists():
+        return False
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return bool(data.get("completed", False))
+    except Exception:
+        return False
+
+
+def write_event_completed(folder_path: Path, completed: bool) -> bool:
+    """Write the 'completed' flag to .album_meta.yaml inside an event folder."""
+    meta_path = folder_path / _META_FILENAME
+    try:
+        existing: dict = {}
+        if meta_path.exists():
+            with open(meta_path, encoding="utf-8") as f:
+                existing = yaml.safe_load(f) or {}
+        existing["completed"] = completed
+        with open(meta_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(existing, f, allow_unicode=True)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to write event meta: {e}")
+        return False
 
 
 def list_event_folders(source_path: Path) -> list[dict]:
@@ -60,6 +94,7 @@ def list_event_folders(source_path: Path) -> list[dict]:
             'folder': item.name,
             'path': str(item),
             'photo_count': len(photos),
+            'completed': read_event_completed(item),
         })
     
     # Sort by date prefix if present
@@ -75,7 +110,7 @@ def list_event_folders(source_path: Path) -> list[dict]:
 
 
 def list_photos(folder_path: Path) -> list[str]:
-    """List photos in a folder, sorted alphabetically by filename.
+    """List photos in a folder (top-level only), sorted alphabetically.
 
     Filenames produced during init already embed the capture date as a prefix,
     so alphabetical order equals chronological order.
@@ -90,20 +125,59 @@ def list_photos(folder_path: Path) -> list[str]:
     )
 
 
-def delete_photo(folder_path: Path, filename: str, source_root: Path) -> TrashToken | None:
+def list_event_sections(folder_path: Path) -> list[dict]:
+    """List photo sections for an event folder.
+
+    If the folder contains only top-level photos, returns a single section with
+    no title. If it contains subfolders, returns one section per subfolder
+    (titled by the subfolder's prettified name). Mixed cases prepend a titleless
+    section for the top-level photos.
+
+    Each section dict: {title, subfolder, photos}, where photos is a sorted
+    list of filenames (basenames only) and subfolder is the relative subfolder
+    name (empty string for top-level).
+    """
+    if not folder_path.is_dir():
+        return []
+
+    sections: list[dict] = []
+
+    top_photos = list_photos(folder_path)
+    if top_photos:
+        sections.append({'title': '', 'subfolder': '', 'photos': top_photos})
+
+    subfolders = sorted(
+        (p for p in folder_path.iterdir() if p.is_dir()),
+        key=lambda p: p.name,
+    )
+    for sub in subfolders:
+        sub_photos = list_photos(sub)
+        if not sub_photos:
+            continue
+        sections.append({
+            'title': build_section_title(sub.name),
+            'subfolder': sub.name,
+            'photos': sub_photos,
+        })
+
+    return sections
+
+
+def delete_photo(folder_path: Path, filename: str, source_root: Path, subfolder: str = '') -> TrashToken | None:
     """Move a source photo into the source trash.
 
+    `subfolder` is a path relative to `folder_path` (empty for top-level).
     Returns a TrashToken on success, or None if the photo was not found /
     the operation failed.
     """
     try:
-        photo_path = folder_path / filename
+        photo_path = folder_path / subfolder / filename if subfolder else folder_path / filename
         if not photo_path.exists():
-            logger.error(f"Photo not found: {filename}")
+            logger.error(f"Photo not found: {subfolder}/{filename}" if subfolder else f"Photo not found: {filename}")
             return None
 
         token = move_to_trash(source_root, photo_path)
-        logger.info(f"Trashed source photo: {filename} (token {token.token_id})")
+        logger.info(f"Trashed source photo: {subfolder}/{filename} (token {token.token_id})" if subfolder else f"Trashed source photo: {filename} (token {token.token_id})")
         return token
 
     except Exception as e:
@@ -370,23 +444,25 @@ def regenerate_album(source_path: Path, workspace_path: Path, progress_callback=
 
 def get_event_info(folder_path: Path) -> dict:
     """Get detailed information about an event folder.
-    
-    Args:
-        folder_path: Path to the event folder
-        
-    Returns:
-        Dictionary with event information
+
+    Returns sections grouping top-level photos and any subfolder photos
+    (each subfolder becomes its own section). The legacy ``photos`` field is
+    a flat list of basenames preserved for callers that don't care about
+    grouping.
     """
     try:
-        photos = list_photos(folder_path)
-        
+        sections = list_event_sections(folder_path)
+        flat_photos = [name for s in sections for name in s['photos']]
+
         return {
             'name': folder_path.name,
             'path': str(folder_path),
-            'photo_count': len(photos),
-            'photos': photos,
+            'photo_count': len(flat_photos),
+            'photos': flat_photos,
+            'sections': sections,
+            'completed': read_event_completed(folder_path),
         }
-        
+
     except Exception as e:
         logger.error(f"Failed to get event info: {e}")
         return {}

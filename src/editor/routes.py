@@ -18,9 +18,11 @@ from src.editor.workspace_manager import (
     update_photo_caption,
     generate_preview,
     get_page_info,
-    create_page_after,
     move_photos,
+    explode_page,
 )
+from src.editor.trash import restore_from_trash
+from src.workspace.config import VALID_IMAGE_EXTENSIONS
 
 logger = logging.getLogger("album.editor")
 
@@ -44,6 +46,7 @@ def api_list_pages():
                 'title': p.section_titles[0] if p.section_titles else f"Page {p.page_number}",
                 'photo_count': p.photo_count,
                 'layout_mode': p.layout_mode,
+                'completed': p.completed,
             } for p in content_pages]
         })
     except Exception as e:
@@ -148,16 +151,66 @@ def api_delete_photo(page_id):
         
         if not filename:
             return jsonify({'success': False, 'error': 'No filename provided'}), 400
+
+        # #region agent log
+        import json as _json_dbg; open('/Users/jzabalegui/Coding/Local_PDF_Album_Generator/.cursor/debug-02279c.log','a').write(_json_dbg.dumps({"sessionId":"02279c","hypothesisId":"H4","location":"routes.py:api_delete_photo","message":"delete album photo","data":{"page_id":page_id,"filename":filename,"photo_exists":(page_folder/filename).exists(),"workspace":str(workspace)},"timestamp":__import__('time').time()})+'\n')
+        # #endregion
         
-        success = delete_photo(page_folder, filename)
-        
-        if success:
-            return jsonify({'success': True})
+        token = delete_photo(page_folder, filename, workspace)
+
+        if token is not None:
+            return jsonify({
+                'success': True,
+                'trash_token': token.token_id,
+                'trash_scope': 'workspace',
+            })
         else:
             return jsonify({'success': False, 'error': 'Failed to delete photo'}), 500
-            
+
     except Exception as e:
         logger.error(f"Failed to delete photo from {page_id}: {e}")
+        # #region agent log
+        import json as _json_dbg; open('/Users/jzabalegui/Coding/Local_PDF_Album_Generator/.cursor/debug-02279c.log','a').write(_json_dbg.dumps({"sessionId":"02279c","hypothesisId":"H4","location":"routes.py:api_delete_photo","message":"delete album photo EXCEPTION","data":{"page_id":page_id,"error":str(e)},"timestamp":__import__('time').time()})+'\n')
+        # #endregion
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/restore-photo', methods=['POST'])
+def api_restore_workspace_photo():
+    """Restore a workspace photo from the trash. Also refreshes photo_count."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        data = request.get_json() or {}
+        token = data.get('trash_token')
+        if not token:
+            return jsonify({'success': False, 'error': 'No trash_token provided'}), 400
+
+        restored = restore_from_trash(workspace, token)
+
+        # Update photo_count in the page's YAML
+        page_folder = restored.parent
+        config_path = page_folder / "page_config.yaml"
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                page_data = yaml.safe_load(f) or {}
+            remaining_images = [
+                p for p in page_folder.iterdir()
+                if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
+            ]
+            page_data['photo_count'] = len(remaining_images)
+            if 'photo_captions' not in page_data:
+                page_data['photo_captions'] = {}
+            with open(config_path, 'w', encoding='utf-8') as f:
+                yaml.dump(page_data, f, allow_unicode=True, default_flow_style=False)
+
+        return jsonify({'success': True, 'restored_path': str(restored.relative_to(workspace))})
+
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
+    except FileExistsError as e:
+        return jsonify({'success': False, 'error': str(e)}), 409
+    except Exception as e:
+        logger.error(f"Failed to restore photo: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -333,26 +386,50 @@ def api_get_preview(page_id):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@app.route('/api/pages/create', methods=['POST'])
-def api_create_page():
-    """Create a new empty page folder after the specified page number."""
+@app.route('/api/page/<page_id>/explode', methods=['POST'])
+def api_explode_page(page_id):
+    """Split a page into two: first half stays, second half moves to a new page right after."""
     try:
         workspace = Path(current_app.config['WORKSPACE'])
-        data = request.get_json()
-        after_page = data.get('after_page')
+        result = explode_page(workspace, page_id)
+        if result.get('success'):
+            return jsonify(result)
+        return jsonify({'success': False, 'error': result.get('error', 'Error desconocido')}), 400
+    except Exception as e:
+        logger.error(f"Failed to explode page {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-        if after_page is None:
-            return jsonify({'success': False, 'error': 'No after_page provided'}), 400
 
-        page_info = create_page_after(workspace, int(after_page))
+@app.route('/api/page/<page_id>/completed', methods=['PUT'])
+def api_set_page_completed(page_id):
+    """Set or unset the 'completed' review flag for a page."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
 
-        if page_info:
-            return jsonify({'success': True, 'page': page_info})
-        else:
-            return jsonify({'success': False, 'error': 'Failed to create page'}), 500
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+
+        data = request.get_json() or {}
+        completed = bool(data.get('completed', False))
+
+        config_path = page_folder / "page_config.yaml"
+        if not config_path.exists():
+            return jsonify({'success': False, 'error': 'Config not found'}), 404
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            yaml_data = yaml.safe_load(f) or {}
+
+        yaml_data['completed'] = completed
+
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(yaml_data, f, allow_unicode=True, default_flow_style=False)
+
+        logger.info(f"Set completed={completed} for page {page_id}")
+        return jsonify({'success': True, 'completed': completed})
 
     except Exception as e:
-        logger.error(f"Failed to create page: {e}")
+        logger.error(f"Failed to set completed for {page_id}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

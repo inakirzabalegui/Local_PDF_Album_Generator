@@ -193,6 +193,14 @@ hero_photos: {hero_photos}
 #   • Deja vacío ({{}}) si no quieres subtítulos
 #
 photo_captions: {photo_captions}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Estado de revisión manual
+# ─────────────────────────────────────────────────────────────────────────────
+# Indica si esta página ha sido revisada manualmente en el editor.
+# Se puede marcar/desmarcar con el botón "Completado" o la tecla C.
+# No afecta al render.
+completed: {completed}
 """
 
 # ── Data models ──────────────────────────────────────────────────────────────
@@ -260,6 +268,7 @@ class PageConfig:
     featured_photos: list[str] = field(default_factory=list)
     hero_photos: list[str] = field(default_factory=list)
     photo_captions: dict[str, str] = field(default_factory=dict)
+    completed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -274,6 +283,7 @@ class PageConfig:
             "featured_photos": self.featured_photos,
             "hero_photos": self.hero_photos,
             "photo_captions": self.photo_captions,
+            "completed": self.completed,
         }
 
     def image_files(self) -> list[Path]:
@@ -374,6 +384,7 @@ def write_page_configs(page_map: list[PageConfig]) -> None:
             featured_photos=featured_str,
             hero_photos=hero_str,
             photo_captions=captions_str,
+            completed=str(pc.completed).lower(),
         )
         
         with open(path, "w", encoding="utf-8") as f:
@@ -476,6 +487,7 @@ def read_page_configs(workspace: Path, global_cfg: GlobalConfig) -> list[PageCon
                 featured_photos=data.get("featured_photos", []),
                 hero_photos=data.get("hero_photos", []),
                 photo_captions=data.get("photo_captions", {}),
+                completed=data.get("completed", False),
             )
         )
 
