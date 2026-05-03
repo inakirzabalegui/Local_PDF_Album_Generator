@@ -172,6 +172,7 @@
                         <button id="rename-page-btn" class="btn btn-secondary">✏️ Renombrar Página</button>
                         <button id="rename-subtitle-btn" class="btn btn-secondary">📝 Renombrar Subtítulo</button>
                         <button id="layout-mode-btn" class="btn btn-secondary">🎨 Modo Layout</button>
+                        <button id="shuffle-layout-btn" class="btn btn-secondary" title="Reordenar aleatoriamente las fotos (tecla S)">🎲 Aleatorio</button>
                         <button id="explode-page-btn" class="btn btn-secondary">💥 Explotar Página en Dos</button>
                         <button id="delete-page-btn" class="btn btn-danger">🗑️ Borrar Página</button>
                         <div style="flex:1"></div>
@@ -235,6 +236,15 @@
                     </div>
                     <p id="gen-modal-counter" class="gen-counter">0 / 0</p>
                     <p id="gen-modal-filename" class="gen-filename"></p>
+                </div>
+            </div>
+
+            <!-- Photo Viewer Modal (tecla V) -->
+            <div id="photo-viewer-modal" class="modal hidden" onclick="handlePhotoViewerOverlayClick(event)">
+                <div class="photo-viewer-content">
+                    <button class="photo-viewer-close" onclick="closePhotoViewer()" title="Cerrar (Esc)">✕</button>
+                    <img id="photo-viewer-img" alt="" />
+                    <div class="photo-viewer-caption" id="photo-viewer-caption"></div>
                 </div>
             </div>
 
@@ -302,6 +312,16 @@
                                         <td data-i18n="help.scope_both">Fuente · Edición</td>
                                     </tr>
                                     <tr>
+                                        <td><kbd>V</kbd></td>
+                                        <td data-i18n="help.key_view">Vista rápida de la foto seleccionada (↑/↓ navega)</td>
+                                        <td data-i18n="help.scope_edition">Edición</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>S</kbd></td>
+                                        <td data-i18n="help.key_shuffle">Reordenar aleatoriamente las fotos de la página</td>
+                                        <td data-i18n="help.scope_edition">Edición</td>
+                                    </tr>
+                                    <tr>
                                         <td><kbd>↑</kbd> / <kbd>↓</kbd></td>
                                         <td data-i18n="help.key_nav_ud">Navegar fotos o panel</td>
                                         <td data-i18n="help.scope_both">Fuente · Edición</td>
@@ -343,6 +363,7 @@
                                     <li data-i18n="help.action_rename_page">✏️ <strong>Renombrar Página</strong> — edita el título de sección</li>
                                     <li data-i18n="help.action_rename_subtitle">📝 <strong>Renombrar Subtítulo</strong> — edita el subtítulo de la página</li>
                                     <li data-i18n="help.action_layout">🎨 <strong>Modo Layout</strong> — elige entre Mesa de Luz, Grid Compacto o Híbrido</li>
+                                    <li data-i18n="help.action_shuffle">🎲 <strong>Aleatorio</strong> — reordena visualmente las fotos con una nueva semilla de layout (tecla S)</li>
                                     <li data-i18n="help.action_explode">💥 <strong>Explotar Página</strong> — divide la página en dos (útil si hay demasiadas fotos)</li>
                                     <li data-i18n="help.action_delete_page">🗑️ <strong>Borrar Página</strong> — elimina la página completa</li>
                                     <li data-i18n="help.action_delete_photo">🗑️ <strong>Borrar Foto</strong> — elimina la foto seleccionada de la página</li>

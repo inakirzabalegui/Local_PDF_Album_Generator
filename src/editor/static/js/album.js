@@ -19,7 +19,6 @@ let _crossPageDropHandled = false;
 // Page panel state (panel is always visible now; kept flags for keyboard nav)
 let pagePanelOpen = true;
 let pagePanelFocused = false;
-let pagePanelKeyboardIndex = -1;
 let photoListFocused = false;
 
 // Undo system
@@ -53,6 +52,7 @@ function setupAlbumEventListeners() {
     document.getElementById('layout-mode-btn')?.addEventListener('click', openLayoutModeModal);
     document.getElementById('apply-layout-mode-btn')?.addEventListener('click', applyLayoutModeFromModal);
     document.getElementById('cancel-layout-mode-btn')?.addEventListener('click', closeLayoutModeModal);
+    document.getElementById('shuffle-layout-btn')?.addEventListener('click', shuffleLayout);
     document.getElementById('toggle-page-completed-btn')?.addEventListener('click', togglePageCompleted);
 
     // Keyboard shortcuts
@@ -62,6 +62,17 @@ function setupAlbumEventListeners() {
 // Handle keyboard shortcuts in album mode
 function handleAlbumKeyboard(e) {
     if (currentTab !== 'album') return;
+
+    // Photo viewer has its own keys and takes priority over everything
+    const viewerEl = document.getElementById('photo-viewer-modal');
+    if (viewerEl && !viewerEl.classList.contains('hidden')) {
+        if (e.key === 'Escape') { e.preventDefault(); closePhotoViewer(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); navigatePhotoViewer(-1); }
+        else if (e.key === 'ArrowDown') { e.preventDefault(); navigatePhotoViewer(1); }
+        else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); closePhotoViewer(); }
+        return;
+    }
+
     if (document.querySelector('.modal:not(.hidden)')) return;
 
     if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
@@ -69,16 +80,12 @@ function handleAlbumKeyboard(e) {
             if (photoListFocused) {
                 e.preventDefault();
                 focusPagePanel();
-                return;
             }
-            navigatePage(-1);
         } else if (e.key === 'ArrowRight') {
             if (pagePanelFocused) {
                 e.preventDefault();
                 focusPhotoList();
-                return;
             }
-            navigatePage(1);
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
             if (pagePanelFocused && pagePanelOpen) {
@@ -98,6 +105,14 @@ function handleAlbumKeyboard(e) {
                 e.preventDefault();
                 deleteSelectedPhoto();
             }
+        } else if (e.key === 'v' || e.key === 'V') {
+            if (selectedPhotoName) {
+                e.preventDefault();
+                openPhotoViewer(selectedPhotoName);
+            }
+        } else if ((e.key === 's' || e.key === 'S') && !e.metaKey && !e.ctrlKey) {
+            e.preventDefault();
+            shuffleLayout();
         } else if (e.key === 'c' || e.key === 'C') {
             e.preventDefault();
             togglePageCompleted();
@@ -106,7 +121,7 @@ function handleAlbumKeyboard(e) {
             renamePage();
         }
     }
-    
+
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
         saveChanges();
@@ -595,6 +610,82 @@ async function updateLayoutMode(newMode) {
     }
 }
 
+// Shuffle photos into a random order, refresh sidebar and re-render preview
+async function shuffleLayout() {
+    if (!PAGES_DATA || PAGES_DATA.length === 0) return;
+    const pageId = PAGES_DATA[currentPageIndex].id;
+
+    log('INFO', 'SHUFFLE_LAYOUT_START', { pageId });
+
+    try {
+        const response = await fetch(`/api/page/${pageId}/shuffle-layout`, {
+            method: 'POST'
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            log('INFO', 'SHUFFLE_LAYOUT_SUCCESS', { seed: data.layout_seed });
+            incrementPendingChanges();
+            // Backend already regenerated the preview PDF; reload sidebar and iframe
+            const pageResp = await fetch(`/api/page/${pageId}`);
+            const pageData = await pageResp.json();
+            if (pageData.success) {
+                renderPageDetails(pageData.page);
+            }
+            loadPreview(pageId);
+        } else {
+            log('ERROR', 'SHUFFLE_LAYOUT_FAILED', { error: data.error });
+            showToast(t('error.shuffle') + data.error, { type: 'error' });
+        }
+    } catch (error) {
+        log('ERROR', 'SHUFFLE_LAYOUT_EXCEPTION', { error: error.message });
+        showToast(t('error.connection_shuffle'), { type: 'error' });
+    }
+}
+
+// Photo Viewer Modal (tecla V)
+function openPhotoViewer(filename) {
+    if (!filename || !PAGES_DATA || PAGES_DATA.length === 0) return;
+    const pageId = PAGES_DATA[currentPageIndex].id;
+    const img = document.getElementById('photo-viewer-img');
+    const caption = document.getElementById('photo-viewer-caption');
+    const modal = document.getElementById('photo-viewer-modal');
+    if (!img || !modal) return;
+
+    img.src = `/api/page/${pageId}/image/${encodeURIComponent(filename)}`;
+    if (caption) caption.textContent = filename;
+    modal.classList.remove('hidden');
+
+    const el = document.querySelector(
+        `#photo-list .photo-item[data-filename="${CSS.escape(filename)}"]`
+    );
+    if (el && selectedPhotoName !== filename) {
+        selectPhoto(filename, el);
+    }
+}
+
+function closePhotoViewer() {
+    const modal = document.getElementById('photo-viewer-modal');
+    if (modal) modal.classList.add('hidden');
+    const img = document.getElementById('photo-viewer-img');
+    if (img) img.src = '';
+}
+
+function handlePhotoViewerOverlayClick(e) {
+    if (e.target.id === 'photo-viewer-modal') closePhotoViewer();
+}
+
+function navigatePhotoViewer(delta) {
+    const items = Array.from(document.querySelectorAll('#photo-list .photo-item'));
+    if (items.length === 0) return;
+    const currentIdx = items.findIndex(el => el.dataset.filename === selectedPhotoName);
+    const n = items.length;
+    const startIdx = currentIdx < 0 ? 0 : currentIdx;
+    const newIdx = ((startIdx + delta) % n + n) % n;
+    const newFilename = items[newIdx].dataset.filename;
+    if (newFilename) openPhotoViewer(newFilename);
+}
+
 // Regenerate preview
 async function regeneratePreview() {
     const pageId = PAGES_DATA[currentPageIndex].id;
@@ -650,7 +741,7 @@ async function navigatePage(delta) {
 
 // Navigate photo selection with arrow keys
 function navigatePhotoSelection(delta) {
-    const items = Array.from(document.querySelectorAll('.photo-item'));
+    const items = Array.from(document.querySelectorAll('#photo-list .photo-item'));
     if (items.length === 0) return;
     
     const currentIndex = items.findIndex(item => item.classList.contains('selected'));
@@ -1034,14 +1125,11 @@ function focusPagePanel() {
     document.getElementById('album-sidebar')?.classList.remove('panel-has-focus');
     document.getElementById('page-panel')?.classList.add('panel-has-focus');
 
-    const items = document.querySelectorAll('.page-list-item');
-    if (pagePanelKeyboardIndex < 0 || pagePanelKeyboardIndex >= items.length) {
-        pagePanelKeyboardIndex = currentPageIndex;
-    }
+    const items = document.querySelectorAll('#page-panel .page-list-item');
     items.forEach((item, i) => {
-        item.classList.toggle('keyboard-focus', i === pagePanelKeyboardIndex);
+        item.classList.toggle('keyboard-focus', i === currentPageIndex);
     });
-    items[pagePanelKeyboardIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    items[currentPageIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // Move logical focus to the photo list (right)
@@ -1051,7 +1139,7 @@ function focusPhotoList() {
     document.getElementById('page-panel')?.classList.remove('panel-has-focus');
     document.getElementById('album-sidebar')?.classList.add('panel-has-focus');
 
-    const items = document.querySelectorAll('.photo-item');
+    const items = document.querySelectorAll('#photo-list .photo-item');
     if (items.length === 0) return;
     const alreadySelected = Array.from(items).find(i => i.classList.contains('selected'));
     if (alreadySelected) {
@@ -1071,17 +1159,11 @@ function navigateToPageFromPanel(index) {
 }
 
 function updatePagePanelActiveItem(index) {
-    document.querySelectorAll('.page-list-item').forEach((item, i) => {
+    const items = document.querySelectorAll('#page-panel .page-list-item');
+    items.forEach((item, i) => {
         item.classList.toggle('active', i === index);
-        item.classList.remove('keyboard-focus');
     });
-    
-    pagePanelKeyboardIndex = index;
-    
-    if (pagePanelOpen) {
-        const activeItem = document.querySelector('.page-list-item.active');
-        if (activeItem) activeItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
+    items[index]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function updatePagePanelTitle(index, newTitle) {
@@ -1090,20 +1172,14 @@ function updatePagePanelTitle(index, newTitle) {
 }
 
 function navigatePagePanelSelection(delta) {
-    const items = Array.from(document.querySelectorAll('.page-list-item'));
+    const items = Array.from(document.querySelectorAll('#page-panel .page-list-item'));
     if (items.length === 0) return;
-    
-    const newIndex = Math.max(0, Math.min(items.length - 1, pagePanelKeyboardIndex + delta));
-    
-    if (newIndex === pagePanelKeyboardIndex) return;
-    
-    items.forEach((item, i) => {
-        item.classList.remove('keyboard-focus');
-        if (i === newIndex) item.classList.add('keyboard-focus');
-    });
-    
-    items[newIndex].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    navigateToPageFromPanel(newIndex);
+    const activeItem = document.querySelector('#page-panel .page-list-item.active');
+    const currentIndex = items.indexOf(activeItem);
+    const newIndex = Math.max(0, Math.min(items.length - 1, currentIndex + delta));
+    if (newIndex !== currentIndex) {
+        navigateToPageFromPanel(newIndex);
+    }
 }
 
 // Move photos from the current page to another page via drag-to-panel-item

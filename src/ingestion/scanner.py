@@ -55,6 +55,8 @@ def scan_directory(source_dir: Path) -> ScanResult:
             continue
         if path.suffix.lower() not in VALID_EXTENSIONS:
             continue
+        if any(part.startswith(".") for part in path.relative_to(source_dir).parts):
+            continue
 
         # Determine if this photo belongs to a special folder
         special_type = _detect_special_folder(path, source_dir)

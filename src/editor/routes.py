@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import random
 from pathlib import Path
 
 import yaml
@@ -294,9 +295,66 @@ def api_update_layout_mode(page_id):
         
         logger.info(f"Updated layout_mode for {page_id} to {layout_mode}")
         return jsonify({'success': True})
-        
+
     except Exception as e:
         logger.error(f"Failed to update layout mode for {page_id}: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>/shuffle-layout', methods=['POST'])
+def api_shuffle_layout(page_id):
+    """Shuffle photos into a random order AND change layout_seed; regenerate preview."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        page_folder = workspace / page_id
+
+        if not page_folder.exists():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+
+        images = sorted(
+            p for p in page_folder.iterdir()
+            if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
+        )
+        if not images:
+            return jsonify({'success': False, 'error': 'No images in page'}), 400
+
+        names = [p.name for p in images]
+        shuffled = names[:]
+        attempts = 0
+        while shuffled == names and len(names) > 1 and attempts < 20:
+            random.shuffle(shuffled)
+            attempts += 1
+
+        if len(names) > 1:
+            success = reorder_photos(page_folder, shuffled)
+            if not success:
+                return jsonify({'success': False, 'error': 'Failed to reorder photos'}), 500
+
+        # Also change layout_seed so decorative randomness (rotation/jitter/z) changes too
+        config_path = page_folder / "page_config.yaml"
+        new_seed = None
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                yaml_data = yaml.safe_load(f) or {}
+            previous_seed = yaml_data.get('layout_seed')
+            new_seed = random.randint(0, 2**31 - 1)
+            if new_seed == previous_seed:
+                new_seed = (new_seed + 1) % (2**31)
+            yaml_data['layout_seed'] = new_seed
+            if 'photo_captions' not in yaml_data:
+                yaml_data['photo_captions'] = {}
+            with open(config_path, 'w', encoding='utf-8') as f:
+                yaml.dump(yaml_data, f, allow_unicode=True, default_flow_style=False)
+
+        # Regenerate preview PDF immediately so the frontend iframe reload sees fresh content
+        global_cfg, _ = load_workspace(workspace)
+        generate_preview(page_folder, global_cfg)
+
+        logger.info(f"Shuffled {len(shuffled)} photos + seed={new_seed} in {page_id}")
+        return jsonify({'success': True, 'order': shuffled, 'layout_seed': new_seed})
+
+    except Exception as e:
+        logger.error(f"Failed to shuffle photos for {page_id}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -454,4 +512,38 @@ def api_discard_changes():
         return jsonify({'success': True, 'message': 'Changes discarded'})
     except Exception as e:
         logger.error(f"Failed to discard changes: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/page/<page_id>/image/<path:filename>', methods=['GET'])
+def api_serve_page_image(page_id, filename):
+    """Serve a photo from a page folder in the workspace."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE']).resolve()
+        page_folder = (workspace / page_id).resolve()
+
+        try:
+            page_folder.relative_to(workspace)
+        except ValueError:
+            return jsonify({'success': False, 'error': 'Invalid page'}), 400
+
+        if not page_folder.exists() or not page_folder.is_dir():
+            return jsonify({'success': False, 'error': 'Page not found'}), 404
+
+        photo_path = (page_folder / filename).resolve()
+        try:
+            photo_path.relative_to(page_folder)
+        except ValueError:
+            return jsonify({'success': False, 'error': 'Invalid filename'}), 400
+
+        if not photo_path.exists() or not photo_path.is_file():
+            return jsonify({'success': False, 'error': 'File not found'}), 404
+
+        if photo_path.suffix.lower() not in VALID_IMAGE_EXTENSIONS:
+            return jsonify({'success': False, 'error': 'Not an image'}), 400
+
+        return send_file(photo_path, as_attachment=False, download_name=photo_path.name)
+
+    except Exception as e:
+        logger.error(f"Failed to serve page image {page_id}/{filename}: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500

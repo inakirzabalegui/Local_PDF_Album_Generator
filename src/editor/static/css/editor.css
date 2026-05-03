@@ -1559,3 +1559,69 @@ body.dark-mode kbd {
     background: rgba(34, 197, 94, 0.20);
     border-color: rgba(34, 197, 94, 0.5);
 }
+
+/* Photo Viewer Modal (tecla V) - minimal, instant, no heavy transitions */
+#photo-viewer-modal {
+    background: rgba(0, 0, 0, 0.92);
+    z-index: 10000;
+}
+
+#photo-viewer-modal .photo-viewer-content {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    padding: 0;
+    box-shadow: none;
+}
+
+#photo-viewer-modal .photo-viewer-content img {
+    max-width: 92vw;
+    max-height: 88vh;
+    object-fit: contain;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+    border-radius: 2px;
+    background: #111;
+}
+
+.photo-viewer-close {
+    position: absolute;
+    top: 20px;
+    right: 24px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    border: none;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.12s ease;
+}
+
+.photo-viewer-close:hover {
+    background: rgba(255, 255, 255, 0.24);
+}
+
+.photo-viewer-caption {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #fff;
+    font-size: 13px;
+    font-family: "SF Mono", Menlo, monospace;
+    background: rgba(0, 0, 0, 0.55);
+    padding: 6px 14px;
+    border-radius: 6px;
+    max-width: 80vw;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

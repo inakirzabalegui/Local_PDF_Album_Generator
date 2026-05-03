@@ -22,7 +22,7 @@ logger = logging.getLogger("album")
 PAGE_W, PAGE_H = A4
 BASE_MARGIN = 29  # 10mm minimum margin required by Peecho printing specs
 TITLE_SPACE = 30  # Reduced from 40 for more vertical space
-SUBTITLE_SPACE = 26  # Reduced from 38 for more vertical space
+SUBTITLE_SPACE = 62  # Must exceed secondary bar bottom (≈114pt from top) so photos never overlap
 BORDER_WIDTH = 4
 BASE_GAP = 4  # Gap between photos within rows and between rows (reduced from 6)
 

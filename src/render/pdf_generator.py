@@ -346,13 +346,13 @@ def _draw_section_titles(
     
     if len(titles) > 1:
         secondary_title = titles[1]
-        font_size_secondary = 10
-        bar_height_secondary = 0.8 * cm
-        bar_y_secondary = bar_y_primary - bar_height_primary - 8
-        
+        font_size_secondary = 12
+        bar_height_secondary = 1.0 * cm
+        bar_y_secondary = bar_y_primary - bar_height_primary - 2
+
         c.setFillColor(Color(0, 0, 0, alpha=0.25))
         c.rect(0, bar_y_secondary, PAGE_W, bar_height_secondary, fill=1, stroke=0)
-        
+
         c.setFillColor(white)
         c.setFont(font_name, font_size_secondary)
         text_w_sec = c.stringWidth(secondary_title, font_name, font_size_secondary)
