@@ -24,6 +24,8 @@ _folder_picker_queue: queue.Queue | None = None
 # Import routes to register them
 from src.editor import routes  # noqa: F401, E402
 from src.editor import source_routes  # noqa: F401, E402
+from src.editor import config_routes  # noqa: F401, E402
+from src.editor import render_routes  # noqa: F401, E402
 
 
 def validate_workspace(workspace_path: Path) -> bool:
@@ -367,12 +369,19 @@ def _bootstrap_workspace(source_path: Path, workspace: Path) -> None:
     sorted_photos = sort_photos(scan_result.photos)
 
     logger_instance.info(f"Creando workspace en '{workspace}' …")
+    from src.editor.source_manager import ensure_event_section_id
+
+    def _sid_provider(group_name: str) -> str:
+        return ensure_event_section_id(source_path / group_name)
+
     global_cfg, page_map = create_workspace(
         sorted_photos,
         workspace,
         source_dir_name=source_path.name,
         cover_candidates=scan_result.cover_photos,
         backcover_candidates=scan_result.backcover_photos,
+        source_root=source_path,
+        section_id_provider=_sid_provider,
     )
 
     write_global_config(workspace, global_cfg)
@@ -380,10 +389,11 @@ def _bootstrap_workspace(source_path: Path, workspace: Path) -> None:
 
     total_pages = len(page_map)
     logger_instance.info(f"Workspace creado con {total_pages} página(s).")
-    if total_pages < 24:
+    min_pages = global_cfg.page_spec.min_pages
+    if min_pages is not None and total_pages < min_pages:
         logger_instance.warning(
             f"El álbum tiene solo {total_pages} página(s). "
-            f"Peecho requiere un mínimo de 24 páginas — se añadirán páginas en blanco al renderizar."
+            f"El proveedor requiere mínimo {min_pages} — se añadirán páginas en blanco al renderizar."
         )
 
 

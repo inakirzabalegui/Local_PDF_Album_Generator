@@ -239,6 +239,7 @@ def api_move_source_photos(folder_name):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/source/reset-album', methods=['POST', 'GET'])
 @app.route('/api/source/regenerate-album', methods=['POST', 'GET'])
 def api_regenerate_source_album():
     """Regenerate the album from source photos."""
@@ -306,6 +307,7 @@ def api_regenerate_source_album():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/source/reset-album/stream', methods=['POST'])
 @app.route('/api/source/regenerate-album/stream', methods=['POST'])
 def api_regenerate_source_album_stream():
     """Regenerate album with Server-Sent Events progress reporting."""
@@ -360,6 +362,95 @@ def api_regenerate_source_album_stream():
             else:
                 progress_queue.put({'step': 'error', 'message': 'Regeneración fallida'})
         except Exception as e:
+            progress_queue.put({'step': 'error', 'message': str(e)})
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    def _generate():
+        while True:
+            try:
+                event = progress_queue.get(timeout=600)
+                yield f"data: {json.dumps(event)}\n\n"
+                if event.get('step') in ('done', 'error'):
+                    break
+            except queue.Empty:
+                yield f"data: {json.dumps({'step': 'error', 'message': 'Timeout'})}\n\n"
+                break
+
+    return Response(
+        stream_with_context(_generate()),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
+@app.route('/api/source/sync-album/preview', methods=['POST', 'GET'])
+def api_sync_album_preview():
+    """Compute non-destructive sync diff between source and workspace."""
+    try:
+        source = Path(current_app.config.get('SOURCE'))
+        workspace = Path(current_app.config.get('WORKSPACE'))
+        if not source or not workspace:
+            return jsonify({'success': False, 'error': 'Source or workspace not configured'}), 400
+        if not workspace.exists() or not (workspace / 'global_config.yaml').exists():
+            return jsonify({
+                'success': False,
+                'error': 'Workspace no inicializado. Usa Reset para crearlo.'
+            }), 400
+
+        from src.workspace.syncer import compute_sync_diff
+        diff = compute_sync_diff(source, workspace)
+        return jsonify({'success': True, 'diff': diff.to_dict()})
+    except Exception as e:
+        logger.error(f"Failed to compute sync preview: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/source/sync-album/apply', methods=['POST'])
+def api_sync_album_apply():
+    """Apply sync diff to workspace with SSE progress."""
+    try:
+        source = Path(current_app.config.get('SOURCE'))
+        workspace = Path(current_app.config.get('WORKSPACE'))
+        if not source or not workspace:
+            return jsonify({'success': False, 'error': 'Source or workspace not configured'}), 400
+        if is_regeneration_running():
+            return jsonify({'success': False, 'error': 'Ya hay una operación en curso.'}), 409
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    progress_queue: queue.Queue = queue.Queue()
+
+    def _run():
+        def _cb(event):
+            progress_queue.put(event)
+        try:
+            from src.workspace.syncer import compute_sync_diff, apply_sync
+            diff = compute_sync_diff(source, workspace)
+            ok = apply_sync(source, workspace, diff, progress_callback=_cb)
+            if ok:
+                from src.editor.workspace_manager import load_workspace as _lw
+                try:
+                    _, pages = _lw(workspace)
+                    content = [p for p in pages if not p.is_cover and not p.is_backcover]
+                    content.sort(key=lambda p: p.page_number)
+                    pages_data = [
+                        {
+                            'id': p.folder.name,
+                            'number': p.page_number,
+                            'title': p.section_titles[0] if p.section_titles else f'Page {p.page_number}',
+                            'photo_count': p.photo_count,
+                            'layout_mode': p.layout_mode,
+                        }
+                        for p in content
+                    ]
+                except Exception:
+                    pages_data = []
+                progress_queue.put({'step': 'done', 'pages': pages_data})
+            else:
+                progress_queue.put({'step': 'error', 'message': 'Sync falló'})
+        except Exception as e:
+            logger.exception('sync apply failed')
             progress_queue.put({'step': 'error', 'message': str(e)})
 
     threading.Thread(target=_run, daemon=True).start()

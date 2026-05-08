@@ -77,7 +77,10 @@
                 
                 <div class="header-right">
                     <button id="open-folder-btn" class="btn btn-secondary" onclick="openAnotherFolder()" data-i18n="header.open_folder">📁 Abrir carpeta</button>
-                    <button id="regenerate-album-header-btn" class="btn btn-secondary">🔄 Regenerar Álbum</button>
+                    <button id="printing-config-btn" class="btn btn-secondary" onclick="openPrintingDialog()" title="Configuración de impresión">🖨️ Impresión</button>
+                    <button id="sync-album-header-btn" class="btn btn-secondary" title="Aplica cambios del source preservando ediciones">🔄 Sincronizar</button>
+                    <button id="reset-album-header-btn" class="btn btn-secondary" title="Reconstruye el álbum desde cero (pierde ediciones)">⚠️ Reset álbum</button>
+                    <button id="render-album-header-btn" class="btn btn-primary" title="Generar PDFs interior + cover">🖨️ Generar PDF</button>
                     <button id="help-btn" class="btn btn-secondary" onclick="openHelp()" data-i18n-title="header.help_title" title="Ayuda">?</button>
                     <button id="lang-btn" onclick="toggleLanguage()" title="Toggle language" style="padding: 8px 12px; background: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); cursor: pointer; font-weight: 600;">ES</button>
                     <button id="debug-btn" class="btn btn-secondary" data-i18n-title="header.debug">{ }</button>
@@ -436,7 +439,33 @@
     <!-- App controller -->
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 
+    <!-- Printing config dialog -->
+    <script src="{{ url_for('static', filename='js/printing.js') }}"></script>
+
+    <!-- PDF render trigger -->
+    <script src="{{ url_for('static', filename='js/render.js') }}"></script>
+
     <!-- Toast container -->
     <div id="toast-container" class="toast-container"></div>
+
+    <!-- Printing config modal -->
+    <div id="printing-dialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="printing-dialog-title">
+        <div class="modal-content printing-dialog-box">
+            <header class="printing-dialog-header">
+                <h2 id="printing-dialog-title">🖨️ Configuración de impresión</h2>
+                <button class="printing-dialog-close" onclick="closePrintingDialog()" aria-label="Cerrar">✕</button>
+            </header>
+            <div class="printing-dialog-body" id="printing-dialog-body">
+                <p class="printing-loading">Cargando…</p>
+            </div>
+            <footer class="printing-dialog-footer">
+                <span class="printing-status" id="printing-status"></span>
+                <div style="flex:1"></div>
+                <button class="btn btn-secondary" onclick="resetPrintingOverrides()">Restablecer overrides</button>
+                <button class="btn btn-secondary" onclick="closePrintingDialog()">Cancelar</button>
+                <button class="btn btn-primary" id="printing-save-btn" onclick="savePrintingConfig()">Guardar</button>
+            </footer>
+        </div>
+    </div>
 </body>
 </html>

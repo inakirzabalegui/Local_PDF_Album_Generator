@@ -1,8 +1,11 @@
 """Photo layout algorithms with justified row-packing collage style.
 
-Places N photos (1–10) on an A4 canvas using justified rows for optimal space usage.
-Exhaustive partition enumeration ensures the best possible fill for any photo count
-and orientation mix.
+Places N photos (1–10) on a configurable trim area using justified rows for
+optimal space usage. Exhaustive partition enumeration ensures the best possible
+fill for any photo count and orientation mix.
+
+Page dimensions and margins are passed in by the caller (derived from the
+provider's PageSpec + per-parity safe insets).
 """
 
 from __future__ import annotations
@@ -15,16 +18,13 @@ from itertools import combinations
 from pathlib import Path
 
 from PIL import Image
-from reportlab.lib.pagesizes import A4
 
 logger = logging.getLogger("album")
 
-PAGE_W, PAGE_H = A4
-BASE_MARGIN = 29  # 10mm minimum margin required by Peecho printing specs
 TITLE_SPACE = 30  # Reduced from 40 for more vertical space
 SUBTITLE_SPACE = 62  # Must exceed secondary bar bottom (≈114pt from top) so photos never overlap
 BORDER_WIDTH = 4
-BASE_GAP = 4  # Gap between photos within rows and between rows (reduced from 6)
+BASE_GAP = 4  # Gap between photos within rows and between rows
 
 LAYOUT_CONFIGS = {
     "mesa_de_luz": {
@@ -228,8 +228,12 @@ def compute_layout(
     has_title: bool = False,
     has_subtitle: bool = False,
     weights: list[float] | None = None,
-    page_w: float = PAGE_W,
-    page_h: float = PAGE_H,
+    page_w: float,
+    page_h: float,
+    margin_left: float,
+    margin_right: float,
+    margin_top: float,
+    margin_bottom: float,
 ) -> list[PlacedPhoto]:
     """Compute positions for all images on a single page.
 
@@ -243,7 +247,10 @@ def compute_layout(
         has_title: Whether page has main section title
         has_subtitle: Whether page has a secondary sub-section title
         weights: Optional list of weight multipliers (one per photo, default 1.0)
-        page_w, page_h: Page dimensions in points
+        page_w, page_h: Trim dimensions in points
+        margin_left, margin_right, margin_top, margin_bottom: Safe insets in points.
+            margin_top is the *base* top inset; TITLE_SPACE and SUBTITLE_SPACE
+            are added on top when has_title/has_subtitle are set.
     """
     n = len(image_paths)
     if n == 0:
@@ -255,12 +262,10 @@ def compute_layout(
     config = LAYOUT_CONFIGS.get(layout_mode, LAYOUT_CONFIGS["mesa_de_luz"])
     rng = random.Random(seed)
 
-    margin_top = BASE_MARGIN + (TITLE_SPACE if has_title else 0) + (SUBTITLE_SPACE if has_subtitle else 0)
-    margin_side = BASE_MARGIN
-    margin_bottom = BASE_MARGIN
+    effective_margin_top = margin_top + (TITLE_SPACE if has_title else 0) + (SUBTITLE_SPACE if has_subtitle else 0)
 
-    usable_w = page_w - 2 * margin_side
-    usable_h = page_h - margin_top - margin_bottom
+    usable_w = page_w - margin_left - margin_right
+    usable_h = page_h - effective_margin_top - margin_bottom
 
     # Read actual aspect ratios
     aspect_ratios = [_get_aspect_ratio(p) for p in image_paths]
@@ -299,8 +304,8 @@ def compute_layout(
         if fill_ratio < 0.75 and n >= 3:
             logger.debug(f"    Using 2x2 grid exception for {n} photos (fill={fill_ratio:.2f})")
             return _compute_grid_layout(
-                image_paths, aspect_ratios, n, usable_w, usable_h, 
-                margin_side, margin_top, config, rng
+                image_paths, aspect_ratios, n, usable_w, usable_h,
+                margin_left, effective_margin_top, config, rng
             )
 
     # Calculate total size and center
@@ -319,16 +324,16 @@ def compute_layout(
 
     if is_column_major or is_mosaic:
         # Column-major or mosaic placement
-        current_x = margin_side + x_offset
+        current_x = margin_left + x_offset
         for col_eff_ars, col_w in rows_or_cols:
             col_real_ars = aspect_ratios[photo_idx : photo_idx + len(col_eff_ars)]
             col_photos = image_paths[photo_idx : photo_idx + len(col_eff_ars)]
-            
-            current_y = margin_top
+
+            current_y = effective_margin_top
             for photo_path, real_ar in zip(col_photos, col_real_ars):
                 photo_w = col_w
                 photo_h = col_w / real_ar
-                
+
                 rotation = rng.uniform(-config["rotation_range"], config["rotation_range"])
                 if abs(rotation) > 0.1:
                     rad = abs(rotation) * math.pi / 180
@@ -336,17 +341,17 @@ def compute_layout(
                     reduction = min(reduction, 0.95)
                     photo_w *= reduction
                     photo_h *= reduction
-                
+
                 max_jitter = BASE_GAP * config["jitter_factor"] * 0.5
                 jitter_x = rng.uniform(-max_jitter, max_jitter)
                 jitter_y = rng.uniform(-max_jitter, max_jitter)
-                
+
                 x = current_x + jitter_x
                 y = current_y + jitter_y
-                
+
                 safety_margin = 2
-                x = max(margin_side + safety_margin, min(x, PAGE_W - margin_side - photo_w - safety_margin))
-                y = max(margin_top + safety_margin, min(y, PAGE_H - margin_bottom - photo_h - safety_margin))
+                x = max(margin_left + safety_margin, min(x, page_w - margin_right - photo_w - safety_margin))
+                y = max(effective_margin_top + safety_margin, min(y, page_h - margin_bottom - photo_h - safety_margin))
                 
                 z = _interleaved_z(photo_idx, n, rng)
                 
@@ -368,14 +373,14 @@ def compute_layout(
             current_x += col_w + BASE_GAP
     else:
         # Row-major placement
-        current_y = margin_top + y_offset
+        current_y = effective_margin_top + y_offset
         for row_eff_ars, row_h in rows_or_cols:
             row_photos = image_paths[photo_idx : photo_idx + len(row_eff_ars)]
             row_real_ars = aspect_ratios[photo_idx : photo_idx + len(row_eff_ars)]
 
             actual_row_w = sum(ar * row_h for ar in row_real_ars) + BASE_GAP * (len(row_real_ars) - 1)
             x_offset_row = max(0, (usable_w - actual_row_w) / 2)
-            current_x = margin_side + x_offset_row
+            current_x = margin_left + x_offset_row
 
             for i, (photo_path, real_ar) in enumerate(zip(row_photos, row_real_ars)):
                 photo_w = real_ar * row_h
@@ -398,8 +403,8 @@ def compute_layout(
                 y = current_y + jitter_y
 
                 safety_margin = 2
-                x = max(margin_side + safety_margin, min(x, PAGE_W - margin_side - photo_w - safety_margin))
-                y = max(margin_top + safety_margin, min(y, PAGE_H - margin_bottom - photo_h - safety_margin))
+                x = max(margin_left + safety_margin, min(x, page_w - margin_right - photo_w - safety_margin))
+                y = max(effective_margin_top + safety_margin, min(y, page_h - margin_bottom - photo_h - safety_margin))
 
                 z = _interleaved_z(photo_idx, n, rng)
 
@@ -430,7 +435,7 @@ def _compute_grid_layout(
     n: int,
     usable_w: float,
     usable_h: float,
-    margin_side: float,
+    margin_left: float,
     margin_top: float,
     config: dict,
     rng: random.Random,
@@ -438,24 +443,24 @@ def _compute_grid_layout(
     """Compute a simple 2x2 grid layout for 3-4 photos (exception case)."""
     grid_cols = 2
     grid_rows = (n + 1) // 2
-    
+
     cell_w = (usable_w - BASE_GAP * (grid_cols - 1)) / grid_cols
     cell_h = (usable_h - BASE_GAP * (grid_rows - 1)) / grid_rows
-    
+
     cell_size = min(cell_w, cell_h)
-    
+
     total_w = grid_cols * cell_size + BASE_GAP * (grid_cols - 1)
     total_h = grid_rows * cell_size + BASE_GAP * (grid_rows - 1)
-    
+
     x_offset = (usable_w - total_w) / 2
     y_offset = (usable_h - total_h) / 2
-    
+
     placed = []
     for i, (photo_path, ar) in enumerate(zip(image_paths, aspect_ratios)):
         row = i // grid_cols
         col = i % grid_cols
-        
-        cell_x = margin_side + x_offset + col * (cell_size + BASE_GAP)
+
+        cell_x = margin_left + x_offset + col * (cell_size + BASE_GAP)
         cell_y = margin_top + y_offset + row * (cell_size + BASE_GAP)
         
         photo_w = cell_size * 0.9

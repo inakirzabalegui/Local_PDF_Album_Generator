@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.ingestion.downsampler import downsample_image
-from src.render.layout import score_photo_set, PAGE_W, PAGE_H, BASE_MARGIN, TITLE_SPACE, BASE_GAP
+from src.render.layout import BASE_GAP, TITLE_SPACE, score_photo_set
 from src.utils.naming import (
     build_section_title,
     extract_date_from_folder,
@@ -18,6 +18,13 @@ from src.utils.naming import (
     prettify_folder_name,
 )
 from src.workspace.config import GlobalConfig, PageConfig
+from src.workspace.manifest import (
+    PageManifest,
+    PhotoManifestEntry,
+    compute_photo_signature,
+    relative_source_path,
+    write_page_manifest,
+)
 
 if TYPE_CHECKING:
     from src.ingestion.scanner import PhotoInfo
@@ -36,6 +43,8 @@ def create_workspace(
     cover_candidates: list[PhotoInfo] | None = None,
     backcover_candidates: list[PhotoInfo] | None = None,
     progress_callback=None,
+    source_root: Path | None = None,
+    section_id_provider=None,
 ) -> tuple[GlobalConfig, list[PageConfig]]:
     """Build the full workspace directory from a sorted photo list.
 
@@ -147,12 +156,25 @@ def create_workspace(
 
     import random as _rnd
 
+    import uuid as _uuid
+
+    def _resolve_section_id(group_name: str) -> str:
+        if section_id_provider is not None:
+            try:
+                sid = section_id_provider(group_name)
+                if sid:
+                    return str(sid)
+            except Exception as e:
+                logger.warning(f"section_id_provider failed for {group_name}: {e}")
+        return _uuid.uuid4().hex
+
     for source_group, group_photos in groups_dict.items():
         chunks = _chunk_photos_by_orientation(group_photos, target_per_page, cfg.photos_per_page_min, cfg.photos_per_page_max)
         logger.debug(f"Chunking {source_group}: {len(group_photos)} photos into {len(chunks)} pages")
-        
+
         section_title = build_section_title(source_group)
         title_slug = folder_name_to_slug(prettify_folder_name(source_group))
+        section_id = _resolve_section_id(source_group)
 
         # Track which sub_groups have already had their banner shown
         seen_sub_groups: set[str] = set()
@@ -163,14 +185,32 @@ def create_workspace(
             page_dir.mkdir()
 
             actual_count = 0
+            manifest_entries: dict[str, PhotoManifestEntry] = {}
             for seq, photo in enumerate(chunk, start=1):
                 ext = photo.path.suffix.lower()
                 if ext not in (".jpg", ".jpeg"):
                     ext = ".jpg"
-                dst = page_dir / f"img_{seq:03d}{ext}"
+                img_name = f"img_{seq:03d}{ext}"
+                dst = page_dir / img_name
                 if downsample_image(photo.path, dst) is not None:
                     actual_count += 1
+                    if source_root is not None:
+                        rel = relative_source_path(source_root, photo.path)
+                        mtime, sha = compute_photo_signature(photo.path)
+                        manifest_entries[img_name] = PhotoManifestEntry(
+                            image_name=img_name,
+                            source_path=rel,
+                            source_mtime=mtime,
+                            sha1=sha,
+                        )
                 _progress(photo.path)
+
+            if source_root is not None:
+                write_page_manifest(PageManifest(
+                    folder=page_dir,
+                    section_id=section_id,
+                    photos=manifest_entries,
+                ))
 
             # Determine if any new sub_groups start on this page
             new_subs = []
@@ -199,6 +239,7 @@ def create_workspace(
                     photo_count=actual_count,
                     section_titles=titles,
                     layout_mode=selected_mode,
+                    section_id=section_id,
                 )
             )
             page_number += 1
@@ -235,8 +276,14 @@ def _chunk_photos_by_orientation(
     if n <= target:
         return [photos]
 
-    usable_w = PAGE_W - 2 * BASE_MARGIN
-    usable_h = PAGE_H - BASE_MARGIN - BASE_MARGIN - TITLE_SPACE
+    # Approximate page aspect ratio for scoring (Blurb Standard Portrait trim).
+    # Used only to compare relative fill quality across page-count candidates,
+    # so exact dimensions are not required.
+    _APPROX_PAGE_W = 575.0  # ~20.32 cm in points
+    _APPROX_PAGE_H = 720.0  # ~25.401 cm in points
+    _APPROX_MARGIN = 18.0   # ~0.635 cm
+    usable_w = _APPROX_PAGE_W - 2 * _APPROX_MARGIN
+    usable_h = _APPROX_PAGE_H - 2 * _APPROX_MARGIN - TITLE_SPACE
 
     ars = [p.width / p.height if p.height else 1.33 for p in photos]
 

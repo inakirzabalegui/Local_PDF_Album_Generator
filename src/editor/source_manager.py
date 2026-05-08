@@ -58,6 +58,40 @@ def write_event_completed(folder_path: Path, completed: bool) -> bool:
         return False
 
 
+def read_event_section_id(folder_path: Path) -> str:
+    """Read 'section_id' from .album_meta.yaml inside an event folder."""
+    meta_path = folder_path / _META_FILENAME
+    if not meta_path.exists():
+        return ""
+    try:
+        with open(meta_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return str(data.get("section_id", "") or "")
+    except Exception:
+        return ""
+
+
+def ensure_event_section_id(folder_path: Path) -> str:
+    """Return existing section_id or generate-and-persist a new uuid4."""
+    import uuid as _uuid
+    sid = read_event_section_id(folder_path)
+    if sid:
+        return sid
+    sid = _uuid.uuid4().hex
+    meta_path = folder_path / _META_FILENAME
+    try:
+        existing: dict = {}
+        if meta_path.exists():
+            with open(meta_path, encoding="utf-8") as f:
+                existing = yaml.safe_load(f) or {}
+        existing["section_id"] = sid
+        with open(meta_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(existing, f, allow_unicode=True)
+    except Exception as e:
+        logger.error(f"Failed to persist section_id for {folder_path}: {e}")
+    return sid
+
+
 def list_event_folders(source_path: Path) -> list[dict]:
     """List event folders (source_groups) in the source directory.
     
@@ -408,6 +442,9 @@ def regenerate_album(source_path: Path, workspace_path: Path, progress_callback=
         logger.info(f"Creating workspace: {workspace_path}")
         workspace_path.mkdir(parents=True, exist_ok=True)
 
+        def _sid_provider(group_name: str) -> str:
+            return ensure_event_section_id(source_path / group_name)
+
         global_cfg, page_map = create_workspace(
             sorted_photos,
             workspace_path,
@@ -415,6 +452,8 @@ def regenerate_album(source_path: Path, workspace_path: Path, progress_callback=
             cover_candidates=scan_result.cover_photos,
             backcover_candidates=scan_result.backcover_photos,
             progress_callback=progress_callback,
+            source_root=source_path,
+            section_id_provider=_sid_provider,
         )
 
         # Write configs

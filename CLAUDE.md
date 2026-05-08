@@ -58,25 +58,32 @@ Launch --app → Launcher (pick folder) → Bootstrap (check/create _album) → 
 
 ### Key State Files
 
-- **`global_config.yaml`** (workspace root): album-wide settings (page size, DPI, min/max photos per page, background color, font, photo weight multipliers, project title, date range). Editable before `--render`.
+- **`global_config.yaml`** (workspace root): album-wide settings — `provider:` block (`name`, `product`, `paper_variant`), `overrides:` block (page/cover/rendering nullable fields), DPI, min/max photos per page, background color, font, weight multipliers, project title, date range. Editable before `--render`.
 - **`page_config.yaml`** (per page folder): `layout_seed`, `layout_mode`, `section_titles`, optional `featured_photos` (1.5× weight) and `hero_photos` (2.5× weight), and `completed` (bool, review flag). `layout_seed` is preserved across reconciliations to keep layouts reproducible.
 - **`.album_meta.yaml`** (per source event folder): stores `completed: true|false` — the manual review flag set by the user in Source mode. Not used by the render pipeline.
 - **`global_config_default.yaml`** (repo root): application-wide defaults applied to every new album on `--init`.
+- **`src/printing/data/<provider>.yaml`**: data-driven provider definitions (`blurb.yaml`, `peecho.yaml`, `custom.yaml`). Each lists products, paper variants, page/cover specs, and spine-caliper coefficients. Consumed by `src/printing/registry.py`.
 
 ### Source Module Responsibilities
 
-- **`src/workspace/config.py`** — `GlobalConfig` and `PageConfig` dataclasses; all YAML serialization/deserialization.
+- **`src/printing/`** — Modular print-provider system. `provider.py` (dataclasses + protocol), `registry.py` (data-driven loader), `overrides.py` (merge per-album overrides into provider specs). Exposes `PageSpec` and `CoverSpec` consumed by the renderer.
+- **`src/workspace/config.py`** — `GlobalConfig` (provider+overrides+composition) and `PageConfig` dataclasses; all YAML serialization/deserialization. Includes silent migration of legacy `page_size: A4` → `provider: peecho/a4`.
 - **`src/workspace/reconciler.py`** — Detects deletions between `--init` and `--render`, redistributes photos per section into the minimum needed pages, renumbers and renames page folders on disk.
 - **`src/workspace/rebalancer.py`** — Cascade push/pull: moves photos between adjacent pages (within same section) to satisfy the min/max constraint.
-- **`src/render/layout.py`** — Implements the three layout modes (`mesa_de_luz`, `grid_compacto`, `hibrido`) and the weight-based row allocation algorithm.
-- **`src/render/pdf_generator.py`** — ReportLab orchestrator; handles multi-volume splitting, Peecho compatibility (even page count, 24–500 pages), and dynamic image resizing at render time.
+- **`src/render/layout.py`** — Implements the three layout modes (`mesa_de_luz`, `grid_compacto`, `hibrido`) and the weight-based row allocation algorithm. Page dimensions and per-parity safe insets are passed in as parameters.
+- **`src/render/pdf_generator.py`** — ReportLab orchestrator. Each page is anchored at trim corner via `c.translate(bleed_left, bleed_bottom)` so layout coords are bleed-agnostic. Margins flip per page parity (binding edge wider). Cover/backcover are embedded only when the provider declares `mode: embedded`; otherwise emitted as a separate wraparound PDF.
+- **`src/render/covers.py`** — Two functions: `render_cover/render_backcover` (embedded mode, single A4-size page) and `render_wraparound_cover_pdf` (Blurb-style spread: flap | hinge | back | spine | front | hinge | flap with uniform bleed).
 - **`src/editor/routes.py`** + **`workspace_manager.py`** — REST API endpoints consumed by the legacy web editor frontend.
 - **`src/editor/source_routes.py`** + **`source_manager.py`** — REST API endpoints for Source mode folder/photo management.
+- **`src/editor/config_routes.py`** — REST endpoints for the printing dialog (`/api/providers`, `/api/config/global`, `/api/config/preview`).
 - **`src/editor/app.py`** — Flask app setup, launcher, bootstrap, and unified app context.
 
 ### Important Constraints
 
-- **Peecho print compatibility:** PDFs must have an even number of pages, between 24 and 500. These validations run automatically during `--render`.
+- **Print provider compatibility:** Provider/product/paper variant define the PDF page size, bleed, safe insets, and cover layout. Page count must be even (auto-padding). Provider also defines min/max page-count limits (e.g. Blurb Standard: ≤ 440; Premium/Proline: ≤ 240; Peecho legacy: 24–498). Configurable via the **🖨️ Impresión** dialog in `--app` or by editing the `provider:` and `overrides:` blocks of `global_config.yaml`.
+- **Wraparound cover (Blurb):** When the provider's product is in `mode: wraparound`, `--render` emits two PDFs per album: `<title>.pdf` (interior pages) and `<title>_cover.pdf` (back-flap | hinge | back | spine | front | hinge | front-flap). Spine width auto-computes from page count via `spine_caliper_cm_per_page × pages + spine_offset_cm` per paper variant; can be overridden in the dialog.
+- **Embedded cover (legacy Peecho A4):** When `mode: embedded`, cover and backcover are inserted as plain pages inside the content PDF (legacy behavior preserved for migrated workspaces).
+- **Asymmetric bleed and margins:** Blurb requires bleed only on top/bottom/outside (not on the binding edge) and a wider safe inset on the binding side (1.27 cm vs 0.635 cm). Layout flips margins per page parity, controlled by `overrides.rendering.binding_side_for_odd` (default `"left"`).
 - **Section isolation:** Photos from different source subfolders are never placed on the same page. Reconciliation and rebalancing respect section boundaries.
 - **Folder naming:** Source subfolder names in format `YYYYMMDD_Name` are parsed into section titles `DD/MM/YYYY - Name`. Special folders `portada/` and `contraportada/` (case-insensitive) supply cover photos and are excluded from content pages.
 - **Font registration:** Registers `/System/Library/Fonts/Helvetica.ttc` as a TrueType font for UTF-8 support (tildes, ñ). Falls back to standard ReportLab fonts if unavailable.

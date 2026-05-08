@@ -1,0 +1,37 @@
+# Peecho legacy provider definition (A4, no bleed, embedded cover).
+# Preserved so existing albums keep rendering identically.
+
+name: peecho
+label: "Peecho (legacy)"
+
+products:
+  a4:
+    label: "A4 (210 × 297 mm)"
+    page:
+      trim_w_cm: 21.0
+      trim_h_cm: 29.7
+      bleed:
+        top_cm: 0.0
+        bottom_cm: 0.0
+        outside_cm: 0.0
+        inside_cm: 0.0
+      safe_insets:
+        outside_cm: 1.0
+        binding_cm: 1.0
+        top_cm: 1.0
+        bottom_cm: 1.0
+    cover:
+      mode: embedded
+      bleed_cm: 0.0
+      hinge_w_cm: 0.0
+      safe_inset_cm: 1.0
+      trim_h_cm: 29.7
+    paper_variants:
+      standard:
+        label: "Standard"
+        spine_caliper_cm_per_page: 0.0
+        spine_offset_cm: 0.0
+        max_pages: 498
+        cover_trim_w_cm: 21.0
+        min_pages: 24
+    default_paper_variant: standard

@@ -75,7 +75,8 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    document.getElementById('regenerate-album-header-btn')?.addEventListener('click', regenerateAlbumFromHeader);
+    document.getElementById('reset-album-header-btn')?.addEventListener('click', regenerateAlbumFromHeader);
+    document.getElementById('sync-album-header-btn')?.addEventListener('click', syncAlbumFromHeader);
     document.getElementById('undo-btn')?.addEventListener('click', performUndo);
 
     initPanelResize(document.getElementById('page-panel'), 'sidebar-width-pages');
@@ -107,8 +108,8 @@ async function regenerateAlbumFromHeader() {
 
     if (needsConfirm) {
         const confirmed = await showConfirm({
-            title: 'Regenerar álbum',
-            message: t('confirm.regenerate_album')
+            title: '⚠️ Reset álbum',
+            message: 'Esto reconstruye el álbum desde cero. PERDERÁS:\n\n• Páginas dividas/movidas manualmente\n• Fotos eliminadas en el editor\n• Marcas de "completado"\n• Fotos destacadas/protagonistas\n• Captions y títulos editados\n• Layouts personalizados\n\nSi solo quieres añadir/quitar fotos del source, usa 🔄 Sincronizar.\n\n¿Continuar?'
         });
         if (!confirmed) return;
     }
@@ -139,6 +140,125 @@ async function regenerateAlbumFromHeader() {
         if (btn) btn.disabled = false;
     } finally {
         if (typeof hideLoading === 'function') hideLoading();
+    }
+}
+
+// ── Sync (light, non-destructive) ────────────────────────────────────────────
+async function syncAlbumFromHeader() {
+    const btn = document.getElementById('sync-album-header-btn');
+    if (btn) btn.disabled = true;
+    if (typeof showLoading === 'function') showLoading('Calculando cambios…');
+
+    let diff;
+    try {
+        const res = await fetch('/api/source/sync-album/preview', { method: 'POST' });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Error');
+        diff = data.diff;
+    } catch (e) {
+        if (typeof hideLoading === 'function') hideLoading();
+        showToast('Error calculando sync: ' + e.message, { type: 'error' });
+        if (btn) btn.disabled = false;
+        return;
+    } finally {
+        if (typeof hideLoading === 'function') hideLoading();
+    }
+
+    if (!diff.has_manifests) {
+        showToast(
+            'Este álbum se creó antes de la versión con sync. Usa Reset álbum para activar el modo sincronización.',
+            { type: 'warning', duration: 8000 }
+        );
+        if (btn) btn.disabled = false;
+        return;
+    }
+
+    const s = diff.summary;
+    const totalChanges = s.added + s.removed + s.renamed + s.new_sections + s.removed_sections;
+    if (totalChanges === 0) {
+        showToast('Workspace ya sincronizado. Nada que hacer.', { type: 'info' });
+        if (btn) btn.disabled = false;
+        return;
+    }
+
+    const lines = [];
+    if (s.added) lines.push(`✚ ${s.added} foto(s) añadida(s)`);
+    if (s.removed) lines.push(`✖ ${s.removed} foto(s) eliminada(s)`);
+    if (s.renamed) lines.push(`✎ ${s.renamed} sección(es) renombrada(s)`);
+    if (s.new_sections) lines.push(`＋ ${s.new_sections} sección(es) nueva(s)`);
+    if (s.removed_sections) lines.push(`✖ ${s.removed_sections} sección(es) eliminada(s)`);
+
+    const detailsBlocks = [];
+    if (diff.renamed_sections.length) {
+        detailsBlocks.push('Renombradas:\n' + diff.renamed_sections.map(r => `  "${r.old_title}" → "${r.new_title}"`).join('\n'));
+    }
+    if (diff.new_sections.length) {
+        detailsBlocks.push('Nuevas:\n' + diff.new_sections.map(n => `  "${n.title}" (${n.photo_count} fotos)`).join('\n'));
+    }
+    if (diff.removed_sections.length) {
+        detailsBlocks.push('Eliminadas:\n' + diff.removed_sections.map(r => `  "${r.title}" (${r.page_count} págs)`).join('\n'));
+    }
+
+    const message = '🔄 Sincronizar workspace con source\n\n' + lines.join('\n') +
+        (detailsBlocks.length ? '\n\n' + detailsBlocks.join('\n\n') : '') +
+        '\n\nSe preservan splits, completados, destacadas y otras ediciones.\n\n¿Aplicar?';
+
+    const confirmed = await showConfirm({ title: 'Sincronizar álbum', message });
+    if (!confirmed) {
+        if (btn) btn.disabled = false;
+        return;
+    }
+
+    // Apply via SSE
+    if (typeof showGenerationModal === 'function') showGenerationModal();
+
+    try {
+        const response = await fetch('/api/source/sync-album/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP ${response.status}`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const parts = buffer.split('\n');
+            buffer = parts.pop();
+            for (const line of parts) {
+                if (!line.startsWith('data: ')) continue;
+                let event;
+                try { event = JSON.parse(line.slice(6)); } catch { continue; }
+                if (event.step === 'removing_photos') {
+                    if (typeof _setGenStep === 'function') _setGenStep(`Eliminando fotos…`);
+                    if (typeof _setGenProgress === 'function') _setGenProgress(event.current || 0, event.total || 0);
+                } else if (event.step === 'adding_photos') {
+                    if (typeof _setGenStep === 'function') _setGenStep('Añadiendo fotos…');
+                    if (typeof _setGenProgress === 'function') _setGenProgress(event.current || 0, event.total || 0);
+                } else if (event.step === 'adding_sections') {
+                    if (typeof _setGenStep === 'function') _setGenStep('Creando secciones nuevas…');
+                    if (typeof _setGenProgress === 'function') _setGenProgress(event.current || 0, event.total || 0);
+                } else if (event.step === 'done') {
+                    if (typeof hideGenerationModal === 'function') hideGenerationModal();
+                    showToast('Sincronización completada', { type: 'success' });
+                    setTimeout(() => window.location.reload(), 400);
+                    return;
+                } else if (event.step === 'error') {
+                    throw new Error(event.message || 'Error desconocido');
+                }
+            }
+        }
+    } catch (e) {
+        if (typeof hideGenerationModal === 'function') hideGenerationModal();
+        showToast('Error en sync: ' + e.message, { type: 'error' });
+    } finally {
+        if (btn) btn.disabled = false;
     }
 }
 

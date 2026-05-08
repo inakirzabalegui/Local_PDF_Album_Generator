@@ -1,34 +1,61 @@
 # Default configuration for PDF Album Generator
-# These values are used as defaults when creating a new album with --init
-# You can edit them here to change the application-wide defaults
-# Each individual album can still override these values in its own global_config.yaml
+# Applied to every new album created with --init.
+# Each individual album can still override these in its own global_config.yaml.
 
-# Page size for the PDF (currently only A4 supported)
-page_size: "A4"
+# ─────────────────────────────────────────────────────────────────────────────
+# Print provider
+# ─────────────────────────────────────────────────────────────────────────────
+# Definitions live in src/printing/data/<provider>.yaml.
+# Available providers: blurb, peecho (legacy A4), custom.
+provider:
+  name: blurb
+  product: standard_portrait_hardcover_dust_jacket
+  paper_variant: standard
 
-# Target resolution for images (in DPI)
+# ─────────────────────────────────────────────────────────────────────────────
+# Optional overrides (null = use provider value)
+# ─────────────────────────────────────────────────────────────────────────────
+overrides:
+  page:
+    trim_w_cm: null
+    trim_h_cm: null
+    bleed_top_cm: null
+    bleed_bottom_cm: null
+    bleed_outside_cm: null
+    bleed_inside_cm: null
+    safe_inset_outside_cm: null
+    safe_inset_binding_cm: null
+    safe_inset_top_cm: null
+    safe_inset_bottom_cm: null
+  cover:
+    trim_w_cm: null
+    trim_h_cm: null
+    bleed_cm: null
+    flap_w_cm: null
+    spine_w_cm: null      # null = autocalc from page count
+    hinge_w_cm: null
+    safe_inset_cm: null
+  rendering:
+    binding_side_for_odd: left
+    max_pages_per_volume: null   # null = use provider's max_pages
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Image and composition defaults
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Target resolution for image downsampling (DPI)
 target_resolution_dpi: 300
 
-# Minimum photos per page (must be >= 1)
+# Min/max photos per page
 photos_per_page_min: 6
-
-# Maximum photos per page (must be <= 10)
 photos_per_page_max: 9
 
-# Maximum pages per PDF volume (for splitting large albums)
-# IMPORTANT: Peecho printing requires 24-500 pages per book
-# Recommended maximum: 498 (to allow for cover + backcover)
-max_pages_per_volume: 200
-
-# Default background color (RGB hex format)
-# Applied when no dominant color can be extracted from photos
+# Default background color (RGB hex), used when ColorThief can't extract one
 default_background_color: "#0000FF"
 
-# System font for titles and labels
-# Supported fonts: Helvetica, Times-Roman, Courier, etc.
-typography_system_font: "Helvetica"
+# System font (Helvetica, Times-Roman, Courier, ...)
+typography_system_font: Helvetica
 
-# Weight multipliers for featured photos
-# Used in page_config.yaml's featured_photos and hero_photos lists
+# Featured/hero weight multipliers
 weight_destacada: 1.5
 weight_protagonista: 2.5

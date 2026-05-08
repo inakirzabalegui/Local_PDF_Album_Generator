@@ -1,0 +1,40 @@
+# Custom provider — fully driven by user overrides in global_config.yaml.
+# Use this when the album's measurements come entirely from manual input
+# (e.g. a print shop without a published spec calculator).
+#
+# Defaults below match Blurb Standard Portrait Hardcover Dust Jacket so
+# the workspace renders something reasonable even before overrides are set.
+
+name: custom
+label: "Custom (manual measurements)"
+
+products:
+  default:
+    label: "Custom Book"
+    page:
+      trim_w_cm: 20.32
+      trim_h_cm: 25.401
+      bleed:
+        top_cm: 0.317
+        bottom_cm: 0.317
+        outside_cm: 0.317
+        inside_cm: 0.0
+      safe_insets:
+        outside_cm: 0.635
+        binding_cm: 1.27
+        top_cm: 0.635
+        bottom_cm: 0.635
+    cover:
+      mode: wraparound
+      bleed_cm: 0.317
+      hinge_w_cm: 0.9525
+      safe_inset_cm: 0.635
+      trim_h_cm: 26.035
+    paper_variants:
+      standard:
+        label: "Custom"
+        spine_caliper_cm_per_page: 0.01058
+        spine_offset_cm: -0.211
+        max_pages: 500
+        cover_trim_w_cm: 64.77
+    default_paper_variant: standard
