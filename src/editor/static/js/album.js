@@ -4,7 +4,6 @@
 
 // Album Editor State
 let currentPageIndex = 0;
-let pendingChanges = 0;
 let selectedPhotoName = null;
 let sortableInstance = null;
 let currentPageCaptions = {};
@@ -25,29 +24,159 @@ let photoListFocused = false;
 const undoStack = [];
 const MAX_UNDO_STEPS = 5;
 
+// PDF.js preview state
+let _currentPreviewPdf = null;
+let _previewResizeObserver = null;
+// Retry counter + cancellation token for the layout-timing fix: the preview
+// container may report a 0 or absurdly small clientWidth/Height while the
+// browser is still settling the flex cascade. When that happens we reschedule
+// via requestAnimationFrame; the token lets a fresh loadPreview() invalidate
+// any stale retries queued from a previous page.
+let _previewRenderRetries = 0;
+let _previewRenderToken = 0;
+// PDF.js disallows concurrent page.render() on the same canvas. Track the
+// in-flight RenderTask so we can cancel it before starting a new one — this
+// prevents the "Cannot use the same canvas during multiple render() operations"
+// error that fires when ResizeObserver triggers a re-render mid-render.
+let _currentRenderTask = null;
+const PREVIEW_RENDER_MAX_RETRIES = 60;       // ~1s at 60 fps
+const PREVIEW_MIN_CONTAINER_PX = 100;        // anything below this is "not laid out yet"
+
 // Initialize album mode when tab is active
 function initAlbumMode() {
     log('INFO', 'ALBUM_MODE_INIT', { totalPages: PAGES_DATA.length });
-    
+
     initPagePanel();
-    
+
     if (PAGES_DATA.length > 0) {
         loadPage(0);
     }
-    
+
     setupAlbumEventListeners();
+    setupPreviewResizeObserver();
+}
+
+function setupPreviewResizeObserver() {
+    if (_previewResizeObserver) return; // already set up
+    const container = document.querySelector('#tab-album-content .preview-container');
+    if (!container) return;
+    _previewResizeObserver = new ResizeObserver(_debounce(() => {
+        if (_currentPreviewPdf) renderCurrentPreviewToCanvas();
+    }, 120));
+    _previewResizeObserver.observe(container);
+}
+
+function _debounce(fn, ms) {
+    let timer;
+    return function(...args) {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn.apply(this, args), ms);
+    };
+}
+
+async function renderCurrentPreviewToCanvas() {
+    if (!_currentPreviewPdf) return;
+    const canvas = document.getElementById('pdf-preview');
+    if (!canvas) return;
+    const container = canvas.closest('.preview-container');
+    if (!container) return;
+
+    // Cancel any in-flight render on this canvas. PDF.js raises
+    // "Cannot use the same canvas during multiple render() operations"
+    // if a previous render hasn't finished — common when ResizeObserver
+    // fires while the initial render is still in progress.
+    if (_currentRenderTask) {
+        try { _currentRenderTask.cancel(); } catch (_) { /* noop */ }
+        _currentRenderTask = null;
+    }
+
+    // Layout-timing guard: container may report 0 (not laid out yet) or a tiny
+    // positive width during the initial flex cascade. Retry on next frame.
+    const rect = container.getBoundingClientRect();
+    const rawW = rect.width || container.clientWidth;
+    const rawH = rect.height || container.clientHeight;
+    const containerW = rawW - 56; // subtract padding (28px each side)
+    const containerH = rawH - 56;
+    const tooSmall =
+        containerW < PREVIEW_MIN_CONTAINER_PX ||
+        containerH < PREVIEW_MIN_CONTAINER_PX;
+
+    if (tooSmall) {
+        if (_previewRenderRetries >= PREVIEW_RENDER_MAX_RETRIES) {
+            console.warn(
+                '[PDF preview] container never reached a usable size after',
+                PREVIEW_RENDER_MAX_RETRIES,
+                'frames; final measurement:',
+                { rawW, rawH, containerW, containerH }
+            );
+            return;
+        }
+        _previewRenderRetries++;
+        const tokenAtSchedule = _previewRenderToken;
+        const pdfAtSchedule = _currentPreviewPdf;
+        requestAnimationFrame(() => {
+            if (tokenAtSchedule !== _previewRenderToken) return;
+            if (pdfAtSchedule !== _currentPreviewPdf) return;
+            renderCurrentPreviewToCanvas();
+        });
+        return;
+    }
+
+    const pdfAtStart = _currentPreviewPdf;
+    let renderTask = null;
+    try {
+        const page = await pdfAtStart.getPage(1);
+        // Bail if a newer loadPreview() superseded us during the await.
+        if (pdfAtStart !== _currentPreviewPdf) return;
+
+        const baseViewport = page.getViewport({ scale: 1 });
+        const scale = Math.min(containerW / baseViewport.width, containerH / baseViewport.height);
+        const viewport = page.getViewport({ scale });
+        const dpr = window.devicePixelRatio || 1;
+
+        canvas.width  = Math.round(viewport.width  * dpr);
+        canvas.height = Math.round(viewport.height * dpr);
+        canvas.style.width  = Math.round(viewport.width)  + 'px';
+        canvas.style.height = Math.round(viewport.height) + 'px';
+
+        const ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+
+        renderTask = page.render({ canvasContext: ctx, viewport });
+        _currentRenderTask = renderTask;
+        await renderTask.promise;
+
+        // Clear only if we're still the latest task — a newer cancel may have
+        // already nulled this out.
+        if (_currentRenderTask === renderTask) _currentRenderTask = null;
+
+        _previewRenderRetries = 0;
+        // Hide the skeleton placeholder now that a real page is on the canvas.
+        const skel = document.getElementById('pdf-preview-skeleton');
+        if (skel) skel.classList.add('hidden');
+    } catch (err) {
+        // PDF.js rejects with RenderingCancelledException when .cancel() is
+        // called. That's our intended flow — silently ignore it.
+        if (err && (err.name === 'RenderingCancelledException' || err.message === 'Rendering cancelled')) {
+            if (_currentRenderTask === renderTask) _currentRenderTask = null;
+            return;
+        }
+        if (_currentRenderTask === renderTask) _currentRenderTask = null;
+        console.error('[PDF preview render]', err);
+        log('WARN', 'PREVIEW_RENDER_ERROR', { err: err.message });
+        if (typeof showToast === 'function') {
+            showToast('Error al renderizar preview: ' + err.message, { type: 'error' });
+        }
+    }
 }
 
 // Setup Event Listeners for Album Mode
 function setupAlbumEventListeners() {
     // Actions
-    document.getElementById('save-btn')?.addEventListener('click', () => saveChanges(false));
     document.getElementById('exit-btn')?.addEventListener('click', exitEditor);
     document.getElementById('explode-page-btn')?.addEventListener('click', explodePage);
     document.getElementById('delete-photo-btn')?.addEventListener('click', deleteSelectedPhoto);
     document.getElementById('delete-page-btn')?.addEventListener('click', deletePage);
-    document.getElementById('rename-page-btn')?.addEventListener('click', renamePage);
-    document.getElementById('rename-subtitle-btn')?.addEventListener('click', renameSubtitle);
     document.getElementById('update-caption-btn')?.addEventListener('click', updatePhotoCaption);
     document.getElementById('layout-mode-btn')?.addEventListener('click', openLayoutModeModal);
     document.getElementById('apply-layout-mode-btn')?.addEventListener('click', applyLayoutModeFromModal);
@@ -70,6 +199,33 @@ function handleAlbumKeyboard(e) {
         else if (e.key === 'ArrowUp') { e.preventDefault(); navigatePhotoViewer(-1); }
         else if (e.key === 'ArrowDown') { e.preventDefault(); navigatePhotoViewer(1); }
         else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); closePhotoViewer(); }
+        else if (e.key === 'd' || e.key === 'D') {
+            e.preventDefault();
+            if (selectedPhotoName) {
+                const filenameToDelete = selectedPhotoName;
+                const items = Array.from(document.querySelectorAll('#photo-list .photo-item'));
+                const currentIdx = items.findIndex(el => el.dataset.filename === filenameToDelete);
+                const remaining = items.length - 1;
+                const viewerImg = document.getElementById('photo-viewer-img');
+                const viewerContent = viewerImg ? viewerImg.closest('.photo-viewer-content') : null;
+                const itemEl = items[currentIdx] || null;
+                playDeleteFeedback({ viewerEl: viewerContent, itemEl }).then(() => {
+                    deletePhotoByName(filenameToDelete).then(() => {
+                        if (remaining <= 0) {
+                            closePhotoViewer();
+                        } else {
+                            const newItems = Array.from(document.querySelectorAll('#photo-list .photo-item'));
+                            if (newItems.length > 0) {
+                                const nextIdx = Math.min(currentIdx, newItems.length - 1);
+                                openPhotoViewer(newItems[nextIdx].dataset.filename);
+                            } else {
+                                closePhotoViewer();
+                            }
+                        }
+                    });
+                });
+            }
+        }
         return;
     }
 
@@ -110,22 +266,18 @@ function handleAlbumKeyboard(e) {
                 e.preventDefault();
                 openPhotoViewer(selectedPhotoName);
             }
-        } else if ((e.key === 's' || e.key === 'S') && !e.metaKey && !e.ctrlKey) {
+        } else if (e.key === 'a' || e.key === 'A') {
             e.preventDefault();
             shuffleLayout();
+        } else if (e.key === 'e' || e.key === 'E') {
+            e.preventDefault();
+            explodePage();
         } else if (e.key === 'c' || e.key === 'C') {
             e.preventDefault();
             togglePageCompleted();
-        } else if (e.key === 'r' || e.key === 'R') {
-            e.preventDefault();
-            renamePage();
         }
     }
 
-    if ((e.metaKey || e.ctrlKey) && e.key === 's') {
-        e.preventDefault();
-        saveChanges();
-    }
 }
 
 // Load a page by index
@@ -283,7 +435,6 @@ async function handlePhotoReorder(evt) {
                 });
             }
             
-            incrementPendingChanges();
             await regeneratePreview();
         } else {
             log('ERROR', 'REORDER_FAILED', { error: data.error });
@@ -304,70 +455,49 @@ function getPhotoOrder() {
 }
 
 // Delete selected photo
-async function deleteSelectedPhoto() {
-    if (!selectedPhotoName) {
-        log('WARN', 'DELETE_PHOTO_NO_SELECTION', {});
-        return;
-    }
-    
+async function deletePhotoByName(filename) {
+    if (!filename) return;
     const pageId = PAGES_DATA[currentPageIndex].id;
-    log('INFO', 'DELETE_PHOTO_START', { filename: selectedPhotoName });
-    
-    const confirmed = await showConfirm({
-        title: 'Borrar foto',
-        message: t('confirm.delete_photo', { name: selectedPhotoName }),
-        danger: true
-    });
-
-    if (!confirmed) {
-        log('INFO', 'DELETE_PHOTO_CANCELLED', {});
-        return;
-    }
-    
+    log('INFO', 'DELETE_PHOTO_START', { filename });
     try {
         // #region agent log
-        fetch('http://127.0.0.1:7583/ingest/f99a3167-114d-4776-a87f-6f247420d0df',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'02279c'},body:JSON.stringify({sessionId:'02279c',location:'album.js:deleteSelectedPhoto',message:'delete album photo request',data:{pageId:pageId,filename:selectedPhotoName},timestamp:Date.now()})}).catch(()=>{});
+        fetch('http://127.0.0.1:7583/ingest/f99a3167-114d-4776-a87f-6f247420d0df',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'02279c'},body:JSON.stringify({sessionId:'02279c',location:'album.js:deleteSelectedPhoto',message:'delete album photo request',data:{pageId:pageId,filename:filename},timestamp:Date.now()})}).catch(()=>{});
         // #endregion
         const response = await fetch(`/api/page/${pageId}/delete-photo`, {
             method: 'DELETE',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({filename: selectedPhotoName})
+            body: JSON.stringify({filename: filename})
         });
-        
+
         const data = await response.json();
-        
+
         // #region agent log
         fetch('http://127.0.0.1:7583/ingest/f99a3167-114d-4776-a87f-6f247420d0df',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'02279c'},body:JSON.stringify({sessionId:'02279c',location:'album.js:deleteSelectedPhoto',message:'delete album photo response',data:{status:response.status,success:data.success,error:data.error||null},timestamp:Date.now()})}).catch(()=>{});
         // #endregion
-        
+
         if (data.success) {
             log('INFO', 'DELETE_PHOTO_SUCCESS', { trash_token: data.trash_token });
             if (data.trash_token) {
                 pushUndoState('delete_photo', {
-                    filename: selectedPhotoName,
+                    filename: filename,
                     trash_token: data.trash_token,
                 });
             }
 
-            const previewContainer = document.querySelector('#tab-album-content .preview-container');
-            const itemEl = document.querySelector(
-                `#photo-list .photo-item[data-filename="${CSS.escape(selectedPhotoName)}"]`
-            );
-            await playDeleteFeedback({ viewerEl: previewContainer, itemEl });
+            if (selectedPhotoName === filename) {
+                selectedPhotoName = null;
+                document.getElementById('delete-photo-btn').disabled = true;
 
-            selectedPhotoName = null;
-            document.getElementById('delete-photo-btn').disabled = true;
+                const captionTextarea = document.getElementById('photo-caption');
+                if (captionTextarea) {
+                    captionTextarea.disabled = true;
+                    captionTextarea.value = '';
+                }
 
-            const captionTextarea = document.getElementById('photo-caption');
-            if (captionTextarea) {
-                captionTextarea.disabled = true;
-                captionTextarea.value = '';
+                const captionBtn = document.getElementById('update-caption-btn');
+                if (captionBtn) captionBtn.disabled = true;
             }
 
-            const captionBtn = document.getElementById('update-caption-btn');
-            if (captionBtn) captionBtn.disabled = true;
-
-            incrementPendingChanges();
             await loadPage(currentPageIndex);
             await regeneratePreview();
         } else {
@@ -378,6 +508,32 @@ async function deleteSelectedPhoto() {
         log('ERROR', 'DELETE_PHOTO_EXCEPTION', { error: error.message });
         showToast(t('error.connection_delete_photo'), { type: 'error' });
     }
+}
+
+async function deleteSelectedPhoto() {
+    if (!selectedPhotoName) {
+        log('WARN', 'DELETE_PHOTO_NO_SELECTION', {});
+        return;
+    }
+
+    const confirmed = await showConfirm({
+        title: 'Borrar foto',
+        message: t('confirm.delete_photo', { name: selectedPhotoName }),
+        danger: true
+    });
+
+    if (!confirmed) {
+        log('INFO', 'DELETE_PHOTO_CANCELLED', {});
+        return;
+    }
+
+    const previewContainer = document.querySelector('#tab-album-content .preview-container');
+    const itemEl = document.querySelector(
+        `#photo-list .photo-item[data-filename="${CSS.escape(selectedPhotoName)}"]`
+    );
+    await playDeleteFeedback({ viewerEl: previewContainer, itemEl });
+
+    await deletePhotoByName(selectedPhotoName);
 }
 
 // Split the current page into two: first half stays, second half moves to a new page right after
@@ -436,35 +592,56 @@ async function explodePage() {
 
 // Delete entire page
 async function deletePage() {
-    const pageId = PAGES_DATA[currentPageIndex].id;
-    const pageNum = PAGES_DATA[currentPageIndex].number;
-    
+    const currentPage = PAGES_DATA[currentPageIndex];
+    const pageId = currentPage.id;
+    const pageNum = currentPage.number;
+    const sectionId = currentPage.section_id || '';
+    const pageTitle = currentPage.title || `Página ${pageNum}`;
+
+    // Determine if this is the last page of its section
+    const isLastInSection = sectionId !== '' &&
+        PAGES_DATA.filter(p => (p.section_id || '') === sectionId).length === 1;
+
+    const confirmMessage = isLastInSection
+        ? t('confirm.delete_page_last_in_section_message', { title: pageTitle })
+        : t('confirm.delete_page', { num: pageNum });
+    const confirmTitle = isLastInSection
+        ? t('confirm.delete_page_last_in_section_title')
+        : 'Borrar página';
+
     const confirmed = await showConfirm({
-        title: 'Borrar página',
-        message: t('confirm.delete_page', { num: pageNum }),
+        title: confirmTitle,
+        message: confirmMessage,
         danger: true
     });
-    
+
     if (!confirmed) {
         return;
     }
-    
+
     try {
         const response = await fetch(`/api/page/${pageId}/delete`, {
             method: 'DELETE'
         });
-        
+
         const data = await response.json();
-        
+
         if (data.success) {
             showToast(t('success.page_deleted'), { type: 'success' });
-            
-            PAGES_DATA.splice(currentPageIndex, 1);
-            
-            const newIndex = Math.max(0, currentPageIndex - 1);
-            if (PAGES_DATA.length > 0) {
-                await loadPage(newIndex);
+
+            // Reload the full pages list so numbering is fresh after server-side renumber
+            const pagesResp = await fetch('/api/pages');
+            const pagesData = await pagesResp.json();
+
+            if (pagesData.success && pagesData.pages.length > 0) {
+                PAGES_DATA.length = 0;
+                pagesData.pages.forEach(p => PAGES_DATA.push(p));
+
+                // Navigate to the same position or the previous one
+                const newIndex = Math.min(currentPageIndex, PAGES_DATA.length - 1);
+                await loadPage(Math.max(0, newIndex));
             } else {
+                PAGES_DATA.length = 0;
                 showToast(t('success.no_more_pages'), { type: 'success' });
                 exitEditor();
             }
@@ -475,53 +652,6 @@ async function deletePage() {
         console.error('Failed to delete page:', error);
         showToast(t('error.connection_delete_page'), { type: 'error' });
     }
-}
-
-// Rename page (first title in section_titles)
-async function renamePage() {
-    const pageId = PAGES_DATA[currentPageIndex].id;
-    const currentTitle = currentPageSectionTitles[0] || '';
-    const newTitle = await showPrompt({
-        title: 'Renombrar página',
-        message: 'Nuevo título de la página:',
-        defaultValue: currentTitle
-    });
-
-    if (newTitle === null) return;
-    const trimmed = newTitle.trim();
-    if (!trimmed) {
-        showToast(t('validation.title_empty'), { type: 'warning' });
-        return;
-    }
-    if (trimmed === currentTitle) return;
-
-    const newTitles = currentPageSectionTitles.slice();
-    newTitles[0] = trimmed;
-    await saveSectionTitles(pageId, newTitles);
-}
-
-// Rename subtitle (second title in section_titles)
-async function renameSubtitle() {
-    const pageId = PAGES_DATA[currentPageIndex].id;
-    const currentSubtitle = currentPageSectionTitles[1] || '';
-    const newSubtitle = await showPrompt({
-        title: 'Renombrar subtítulo',
-        message: 'Subtítulo (vacío = sin subtítulo):',
-        defaultValue: currentSubtitle
-    });
-
-    if (newSubtitle === null) return;
-    const trimmed = newSubtitle.trim();
-    if (trimmed === currentSubtitle) return;
-
-    const newTitles = currentPageSectionTitles.slice();
-    if (trimmed) {
-        newTitles[1] = trimmed;
-    } else if (newTitles.length > 1) {
-        newTitles.splice(1, 1);
-    }
-    if (!newTitles[0]) newTitles[0] = `Página ${PAGES_DATA[currentPageIndex].number}`;
-    await saveSectionTitles(pageId, newTitles);
 }
 
 async function saveSectionTitles(pageId, newTitles) {
@@ -547,7 +677,6 @@ async function saveSectionTitles(pageId, newTitles) {
             updatePagePanelTitle(currentPageIndex, newTitles[0] || `Página ${PAGES_DATA[currentPageIndex].number}`);
             PAGES_DATA[currentPageIndex].title = newTitles[0];
 
-            incrementPendingChanges();
             await regeneratePreview();
         } else {
             log('ERROR', 'UPDATE_TITLE_FAILED', { error: data.error });
@@ -598,7 +727,6 @@ async function updateLayoutMode(newMode) {
             log('INFO', 'UPDATE_LAYOUT_MODE_SUCCESS', {});
             currentPageLayoutMode = newMode;
             PAGES_DATA[currentPageIndex].layout_mode = newMode;
-            incrementPendingChanges();
             await regeneratePreview();
         } else {
             log('ERROR', 'UPDATE_LAYOUT_MODE_FAILED', { error: data.error });
@@ -625,7 +753,6 @@ async function shuffleLayout() {
 
         if (data.success) {
             log('INFO', 'SHUFFLE_LAYOUT_SUCCESS', { seed: data.layout_seed });
-            incrementPendingChanges();
             // Backend already regenerated the preview PDF; reload sidebar and iframe
             const pageResp = await fetch(`/api/page/${pageId}`);
             const pageData = await pageResp.json();
@@ -716,10 +843,52 @@ async function regeneratePreview() {
 }
 
 // Load preview PDF
-function loadPreview(pageId) {
-    const iframe = document.getElementById('pdf-preview');
-    if (iframe) {
-        iframe.src = `/api/page/${pageId}/preview?t=${Date.now()}`;
+async function loadPreview(pageId) {
+    if (typeof pdfjsLib === 'undefined') {
+        log('WARN', 'PDFJS_NOT_LOADED', {});
+        console.error('[PDF preview] pdfjsLib not loaded — CDN script may have failed.');
+        if (typeof showToast === 'function') {
+            showToast('PDF.js no se ha cargado (revisa la conexión a internet).', { type: 'error' });
+        }
+        return;
+    }
+    // Invalidate any pending render retries from a previous page and reset
+    // the layout-timing retry counter for this fresh load.
+    _previewRenderToken++;
+    _previewRenderRetries = 0;
+    _currentPreviewPdf = null;
+    // Abort any render still in flight on the canvas from the previous page.
+    if (_currentRenderTask) {
+        try { _currentRenderTask.cancel(); } catch (_) { /* noop */ }
+        _currentRenderTask = null;
+    }
+    const canvas = document.getElementById('pdf-preview');
+    if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    // Re-show the skeleton while the new page is being fetched and rendered.
+    const skel = document.getElementById('pdf-preview-skeleton');
+    if (skel) skel.classList.remove('hidden');
+    try {
+        const url = `/api/page/${pageId}/preview?t=${Date.now()}`;
+        const pdf = await pdfjsLib.getDocument({ url }).promise;
+        _currentPreviewPdf = pdf;
+        // Always wait for one frame so the browser has a chance to lay out
+        // whatever DOM updates landed alongside this load (e.g. sidebar
+        // rerender). The render function itself will retry if the container
+        // still measures too small after this initial frame.
+        requestAnimationFrame(() => {
+            // Bail if a newer loadPreview() superseded this attempt.
+            if (pdf !== _currentPreviewPdf) return;
+            renderCurrentPreviewToCanvas();
+        });
+    } catch (err) {
+        console.error('[PDF preview load]', err);
+        log('WARN', 'PREVIEW_LOAD_ERROR', { pageId, err: err.message });
+        if (typeof showToast === 'function') {
+            showToast('No se pudo cargar el preview: ' + err.message, { type: 'error' });
+        }
     }
 }
 
@@ -729,10 +898,6 @@ async function navigatePage(delta) {
     log('INFO', 'NAVIGATE_PAGE', { from: currentPageIndex, to: newIndex, delta });
     
     if (newIndex >= 0 && newIndex < PAGES_DATA.length) {
-        if (pendingChanges > 0) {
-            log('INFO', 'NAVIGATE_AUTOSAVE', { pendingChanges });
-            await saveChanges(true);
-        }
         await loadPage(newIndex);
     } else {
         log('WARN', 'NAVIGATE_OUT_OF_BOUNDS', { newIndex });
@@ -767,12 +932,6 @@ function updateNavigationButtons() {
     const nextBtn = document.getElementById('next-btn');
     if (prevBtn) prevBtn.disabled = currentPageIndex === 0;
     if (nextBtn) nextBtn.disabled = currentPageIndex === PAGES_DATA.length - 1;
-}
-
-// Increment pending changes counter
-function incrementPendingChanges() {
-    pendingChanges++;
-    log('INFO', 'PENDING_CHANGES_INCREMENTED', { count: pendingChanges });
 }
 
 // Update photo caption
@@ -811,7 +970,6 @@ async function updatePhotoCaption() {
             });
             
             currentPageCaptions[selectedPhotoName] = newCaption;
-            incrementPendingChanges();
             await regeneratePreview();
         } else {
             log('ERROR', 'UPDATE_CAPTION_FAILED', { error: data.error });
@@ -1042,32 +1200,48 @@ async function restoreDeletedPhoto(trashToken) {
 // Page Navigator Panel
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Sortable instance for the page panel (page reordering)
+let pagePanelSortable = null;
+
 function initPagePanel() {
     const pageList = document.getElementById('page-list');
     if (!pageList) return;
-    
+
     pageList.textContent = '';
-    
+
     PAGES_DATA.forEach((page, index) => {
         const item = document.createElement('div');
         item.className = 'page-list-item';
         item.dataset.index = index;
+        item.dataset.pageId = page.id;
+        item.dataset.sectionId = page.section_id || '';
 
         const numSpan = document.createElement('span');
         numSpan.className = 'page-list-num';
         numSpan.textContent = String(page.number).padStart(2, '0');
 
+        const titleWrap = document.createElement('span');
+        titleWrap.className = 'page-list-title-wrap';
+
         const titleSpan = document.createElement('span');
         titleSpan.className = 'page-list-title';
         titleSpan.textContent = page.title || `Página ${page.number}`;
         titleSpan.id = `page-panel-title-${index}`;
+        titleWrap.appendChild(titleSpan);
+
+        if (page.subtitle) {
+            const subSpan = document.createElement('span');
+            subSpan.className = 'page-list-subtitle';
+            subSpan.textContent = page.subtitle;
+            titleWrap.appendChild(subSpan);
+        }
 
         const dot = document.createElement('span');
         dot.className = 'completed-dot';
         dot.title = 'Revisado';
 
         item.appendChild(numSpan);
-        item.appendChild(titleSpan);
+        item.appendChild(titleWrap);
         item.appendChild(dot);
 
         if (page.completed) {
@@ -1098,7 +1272,36 @@ function initPagePanel() {
 
         pageList.appendChild(item);
     });
-    
+
+    // Attach Sortable for page reordering (within-section only)
+    if (pagePanelSortable) {
+        pagePanelSortable.destroy();
+        pagePanelSortable = null;
+    }
+    if (typeof Sortable !== 'undefined' && PAGES_DATA.length > 1) {
+        pagePanelSortable = Sortable.create(pageList, {
+            animation: 150,
+            ghostClass: 'page-sortable-ghost',
+            chosenClass: 'page-sortable-chosen',
+            onMove(evt) {
+                const draggedSectionId = evt.dragged.dataset.sectionId || '';
+                const relatedSectionId = evt.related.dataset.sectionId || '';
+                if (draggedSectionId !== relatedSectionId) {
+                    evt.dragged.classList.add('page-drag-forbidden');
+                    return false; // cancel the move
+                }
+                evt.dragged.classList.remove('page-drag-forbidden');
+                return true;
+            },
+            onEnd(evt) {
+                evt.item.classList.remove('page-drag-forbidden');
+                // If position unchanged, nothing to do
+                if (evt.oldIndex === evt.newIndex) return;
+                handlePageReorder(evt.item.dataset.pageId);
+            },
+        });
+    }
+
     const panel = document.getElementById('page-panel');
     if (panel) {
         panel.addEventListener('mouseenter', () => { pagePanelFocused = true; });
@@ -1116,6 +1319,75 @@ function initPagePanel() {
     }
 
     log('INFO', 'PAGE_PANEL_INIT', { pages: PAGES_DATA.length });
+}
+
+// Handle page reorder after a panel drag-and-drop
+async function handlePageReorder(draggedPageId) {
+    // Collect new order from DOM
+    const items = document.querySelectorAll('#page-list .page-list-item');
+    const orderedPageIds = Array.from(items).map(el => el.dataset.pageId);
+
+    try {
+        const response = await fetch('/api/pages/reorder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ordered_page_ids: orderedPageIds }),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            showToast(t('success.pages_reordered'), { type: 'success' });
+
+            // Reload page list and refocus the dragged page by its new id
+            const pagesResp = await fetch('/api/pages');
+            const pagesData = await pagesResp.json();
+
+            if (pagesData.success && pagesData.pages.length > 0) {
+                // Find what the dragged page's new id is from renamed_pages
+                let newDraggedId = draggedPageId;
+                if (data.renamed_pages && data.renamed_pages.length > 0) {
+                    const renamed = data.renamed_pages.find(r => r.old_id === draggedPageId);
+                    if (renamed) newDraggedId = renamed.new_id;
+                }
+
+                PAGES_DATA.length = 0;
+                pagesData.pages.forEach(p => PAGES_DATA.push(p));
+
+                // Find the new index of the dragged page
+                const newIndex = PAGES_DATA.findIndex(p => p.id === newDraggedId);
+                await loadPage(Math.max(0, newIndex !== -1 ? newIndex : 0));
+            }
+        } else {
+            const errorMsg = data.error === 'Cross-section reordering not allowed'
+                ? t('error.reorder_cross_section')
+                : t('error.reorder_pages') + (data.error || '');
+            showToast(errorMsg, { type: 'error' });
+
+            // Restore visual order by reloading from server
+            const pagesResp = await fetch('/api/pages');
+            const pagesData = await pagesResp.json();
+            if (pagesData.success && pagesData.pages.length > 0) {
+                PAGES_DATA.length = 0;
+                pagesData.pages.forEach(p => PAGES_DATA.push(p));
+                await loadPage(currentPageIndex);
+            }
+        }
+    } catch (error) {
+        console.error('Failed to reorder pages:', error);
+        showToast(t('error.connection_reorder_pages'), { type: 'error' });
+
+        // Restore visual order
+        const pagesResp = await fetch('/api/pages').catch(() => null);
+        if (pagesResp && pagesResp.ok) {
+            const pagesData = await pagesResp.json();
+            if (pagesData.success && pagesData.pages.length > 0) {
+                PAGES_DATA.length = 0;
+                pagesData.pages.forEach(p => PAGES_DATA.push(p));
+                await loadPage(currentPageIndex);
+            }
+        }
+    }
 }
 
 // Move logical focus to the page panel (left) — highlights + toggles flags
@@ -1200,7 +1472,6 @@ async function moveAlbumPhotosToPage(filenames, targetPageIndex) {
 
         if (data.success) {
             showToast(`${filenames.length} foto(s) movida(s) a página ${targetPage.number}`, { type: 'success' });
-            incrementPendingChanges();
             // Regenerate both pages in parallel, then navigate to the target
             const sourceIdx = currentPageIndex;
             await Promise.all([
@@ -1220,47 +1491,8 @@ async function moveAlbumPhotosToPage(filenames, targetPageIndex) {
     }
 }
 
-// Save changes
-async function saveChanges(silent = false) {
-    try {
-        const response = await fetch('/api/save', {
-            method: 'POST'
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            if (!silent) {
-                showToast(t('success.title'), { type: 'success' });
-            }
-            pendingChanges = 0;
-        } else {
-            if (!silent) {
-                showToast(t('error.save') + data.error, { type: 'error' });
-            }
-        }
-    } catch (error) {
-        console.error('Failed to save:', error);
-        if (!silent) {
-            showToast(t('error.connection_save'), { type: 'error' });
-        }
-    }
-}
-
 // Exit editor
-async function exitEditor() {
-    if (pendingChanges > 0) {
-        const confirmed = await showConfirm({
-            title: 'Cambios sin guardar',
-            message: t('success.unsaved_changes', { count: pendingChanges }),
-            danger: true
-        });
-
-        if (!confirmed) {
-            return;
-        }
-    }
-
+function exitEditor() {
     window.close();
     setTimeout(() => {
         showToast(t('success.can_close'), { type: 'info' });

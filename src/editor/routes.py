@@ -13,6 +13,7 @@ from src.editor.app import app
 from src.editor.workspace_manager import (
     load_workspace,
     reorder_photos,
+    reorder_pages,
     delete_photo,
     delete_page,
     update_page_title,
@@ -45,14 +46,39 @@ def api_list_pages():
                 'id': p.folder.name,
                 'number': p.page_number,
                 'title': p.section_titles[0] if p.section_titles else f"Page {p.page_number}",
+                'subtitle': p.section_titles[1] if len(p.section_titles) > 1 else "",
                 'photo_count': p.photo_count,
                 'layout_mode': p.layout_mode,
                 'completed': p.completed,
+                'section_id': p.section_id,
             } for p in content_pages]
         })
     except Exception as e:
         logger.error(f"Failed to list pages: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/pages/reorder', methods=['POST'])
+def api_reorder_pages():
+    """Reorder content pages. Body: {ordered_page_ids: [...]}"""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        data = request.get_json() or {}
+        ordered_page_ids = data.get('ordered_page_ids', [])
+
+        if not ordered_page_ids:
+            return jsonify({'success': False, 'error': 'No ordered_page_ids provided'}), 400
+
+        result = reorder_pages(workspace, ordered_page_ids)
+
+        if not result['success']:
+            return jsonify(result), 400
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Failed to reorder pages: {e}")
+        return jsonify({'success': False, 'error': str(e), 'renamed_pages': []}), 500
 
 
 @app.route('/api/page/<page_id>', methods=['GET'])
@@ -225,10 +251,14 @@ def api_delete_page(page_id):
         if not page_folder.exists():
             return jsonify({'success': False, 'error': 'Page not found'}), 404
         
-        success = delete_page(workspace, page_folder)
-        
-        if success:
-            return jsonify({'success': True})
+        result = delete_page(workspace, page_folder)
+
+        if result['success']:
+            return jsonify({
+                'success': True,
+                'last_in_section': result['last_in_section'],
+                'renumbered': result['renumbered'],
+            })
         else:
             return jsonify({'success': False, 'error': 'Failed to delete page'}), 500
             

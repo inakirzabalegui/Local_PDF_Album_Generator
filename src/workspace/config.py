@@ -157,6 +157,11 @@ completed: {completed}
 
 # ID estable de sección (NO editar — usado por sync para detectar renames)
 section_id: {section_id}
+
+# IDs de sub-grupos (subcarpetas del evento) cuyas fotos aparecen en esta página.
+# El syncer reconstruye section_titles[1] a partir de estos IDs en cada sync.
+# (NO editar — gestionado por el pipeline)
+sub_group_ids: {sub_group_ids}
 """
 
 # ── Data models ──────────────────────────────────────────────────────────────
@@ -267,6 +272,7 @@ class PageConfig:
     photo_captions: dict[str, str] = field(default_factory=dict)
     completed: bool = False
     section_id: str = ""
+    sub_group_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -283,6 +289,7 @@ class PageConfig:
             "photo_captions": self.photo_captions,
             "completed": self.completed,
             "section_id": self.section_id,
+            "sub_group_ids": list(self.sub_group_ids),
         }
 
     def image_files(self) -> list[Path]:
@@ -385,6 +392,11 @@ def write_page_configs(page_map: list[PageConfig]) -> None:
 
         section_id_str = f'"{pc.section_id}"' if pc.section_id else '""'
 
+        if not pc.sub_group_ids:
+            sub_group_ids_str = "[]"
+        else:
+            sub_group_ids_str = "\n  - " + "\n  - ".join(f'"{s}"' for s in pc.sub_group_ids)
+
         content = PAGE_CONFIG_TEMPLATE.format(
             page_number=pc.page_number,
             photo_count=pc.photo_count,
@@ -399,6 +411,7 @@ def write_page_configs(page_map: list[PageConfig]) -> None:
             photo_captions=captions_str,
             completed=str(pc.completed).lower(),
             section_id=section_id_str,
+            sub_group_ids=sub_group_ids_str,
         )
 
         with open(path, "w", encoding="utf-8") as f:
@@ -539,6 +552,7 @@ def read_page_configs(workspace: Path, global_cfg: GlobalConfig) -> list[PageCon
                 photo_captions=data.get("photo_captions", {}),
                 completed=data.get("completed", False),
                 section_id=data.get("section_id", "") or "",
+                sub_group_ids=list(data.get("sub_group_ids", []) or []),
             )
         )
 

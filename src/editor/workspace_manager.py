@@ -152,32 +152,223 @@ def delete_photo(page_folder: Path, filename: str, workspace_root: Path) -> Tras
         return None
 
 
-def delete_page(workspace: Path, page_folder: Path) -> bool:
-    """Delete an entire page folder.
-    
-    Note: This marks the page for deletion. Reconciliation will handle
-    renumbering when --render is next called.
-    
+def delete_page(workspace: Path, page_folder: Path) -> dict:
+    """Delete an entire page folder and immediately renumber subsequent pages.
+
     Args:
         workspace: Path to the workspace root
         page_folder: Path to the page folder to delete
-        
+
     Returns:
-        True if successful, False otherwise
+        Dict with keys: success (bool), last_in_section (bool), renumbered (int)
     """
+    import re
+
     try:
         if not page_folder.exists():
             logger.error(f"Page folder not found: {page_folder}")
-            return False
-        
-        # Delete the entire folder
+            return {"success": False, "last_in_section": False, "renumbered": 0}
+
+        # Read the deleted page's metadata before removal
+        deleted_config_path = page_folder / "page_config.yaml"
+        deleted_page_number = None
+        deleted_section_id = ""
+        if deleted_config_path.exists():
+            with open(deleted_config_path, "r", encoding="utf-8") as f:
+                deleted_data = yaml.safe_load(f) or {}
+            deleted_page_number = deleted_data.get("page_number")
+            deleted_section_id = deleted_data.get("section_id", "") or ""
+
+        # Delete the folder
         shutil.rmtree(page_folder)
         logger.info(f"Deleted page folder: {page_folder.name}")
-        return True
-        
+
+        if deleted_page_number is None:
+            return {"success": True, "last_in_section": False, "renumbered": 0}
+
+        # Collect remaining page folders (those with page_config.yaml)
+        folder_pattern = re.compile(r"^pagina_(\d+)_(.+)$")
+        remaining = []
+        for entry in workspace.iterdir():
+            if not entry.is_dir():
+                continue
+            cfg = entry / "page_config.yaml"
+            if not cfg.exists():
+                continue
+            with open(cfg, "r", encoding="utf-8") as f:
+                cfg_data = yaml.safe_load(f) or {}
+            # Skip cover/backcover pages
+            if cfg_data.get("is_cover") or cfg_data.get("is_backcover"):
+                continue
+            remaining.append((entry, cfg_data))
+
+        # Sort by current page_number
+        remaining.sort(key=lambda x: x[1].get("page_number", 0))
+
+        # Determine last_in_section: does any remaining page share the deleted section_id?
+        last_in_section = deleted_section_id != "" and not any(
+            d.get("section_id", "") == deleted_section_id for _, d in remaining
+        )
+
+        # Renumber pages with page_number > deleted_page_number
+        renumbered = 0
+        for entry, cfg_data in remaining:
+            current_num = cfg_data.get("page_number", 0)
+            if current_num <= deleted_page_number:
+                continue
+
+            new_num = current_num - 1
+
+            # Rename folder: pagina_NN_slug → pagina_(N-1)_slug
+            m = folder_pattern.match(entry.name)
+            if m:
+                slug = m.group(2)
+                new_name = f"pagina_{new_num:02d}_{slug}"
+                new_path = workspace / new_name
+                entry.rename(new_path)
+                new_config_path = new_path / "page_config.yaml"
+            else:
+                # Unexpected name format — update config in-place without renaming
+                new_config_path = entry / "page_config.yaml"
+
+            # Update page_number in page_config.yaml
+            with open(new_config_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            data["page_number"] = new_num
+            if "photo_captions" not in data:
+                data["photo_captions"] = {}
+            with open(new_config_path, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+
+            renumbered += 1
+            logger.info(f"Renumbered page {current_num} → {new_num} ({entry.name})")
+
+        return {"success": True, "last_in_section": last_in_section, "renumbered": renumbered}
+
     except Exception as e:
         logger.error(f"Failed to delete page: {e}")
-        return False
+        return {"success": False, "last_in_section": False, "renumbered": 0}
+
+
+def reorder_pages(workspace: Path, ordered_page_ids: list[str]) -> dict:
+    """Reorder content pages on disk based on the given ordering.
+
+    Args:
+        workspace: Workspace root.
+        ordered_page_ids: New ordering of content page folder names, top-to-bottom.
+            Must include ALL content pages (excluding portada/contraportada).
+            Order must respect section contiguity (validated server-side).
+
+    Returns:
+        Dict with success (bool), error (str|None), renamed_pages (list of {old_id, new_id}).
+    """
+    import re
+    import uuid
+
+    try:
+        folder_pattern = re.compile(r"^pagina_(\d+)_(.+)$")
+
+        # Collect current content pages
+        current_pages = {}
+        for entry in workspace.iterdir():
+            if not entry.is_dir():
+                continue
+            cfg_path = entry / "page_config.yaml"
+            if not cfg_path.exists():
+                continue
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg_data = yaml.safe_load(f) or {}
+            if cfg_data.get("is_cover") or cfg_data.get("is_backcover"):
+                continue
+            current_pages[entry.name] = cfg_data
+
+        # Validate: ordered_page_ids must be a permutation of current content pages
+        current_set = set(current_pages.keys())
+        ordered_set = set(ordered_page_ids)
+        if current_set != ordered_set:
+            missing = current_set - ordered_set
+            extra = ordered_set - current_set
+            msg = []
+            if missing:
+                msg.append(f"Missing pages: {missing}")
+            if extra:
+                msg.append(f"Unknown pages: {extra}")
+            return {"success": False, "error": "; ".join(msg), "renamed_pages": []}
+
+        # Validate section contiguity
+        seen_sections: dict[str, int] = {}  # section_id → last position seen
+        prev_section = None
+        for pos, page_id in enumerate(ordered_page_ids):
+            section_id = current_pages[page_id].get("section_id", "") or ""
+            if section_id != prev_section:
+                if section_id in seen_sections:
+                    return {
+                        "success": False,
+                        "error": "Cross-section reordering not allowed",
+                        "renamed_pages": [],
+                    }
+                seen_sections[section_id] = pos
+                prev_section = section_id
+
+        # Determine starting page_number by finding minimum current page_number
+        start_num = min(
+            (d.get("page_number", 1) for d in current_pages.values()),
+            default=1,
+        )
+
+        # Build mapping: page_id → new page_number
+        new_numbers = {page_id: start_num + i for i, page_id in enumerate(ordered_page_ids)}
+
+        # Check which pages actually need renaming
+        needs_rename = [
+            page_id for page_id in ordered_page_ids
+            if current_pages[page_id].get("page_number") != new_numbers[page_id]
+        ]
+
+        if not needs_rename:
+            return {"success": True, "error": None, "renamed_pages": []}
+
+        # Phase 1: rename affected folders to temporary names
+        tmp_mapping: dict[str, Path] = {}  # original page_id → tmp path
+        uid = uuid.uuid4().hex[:8]
+        for page_id in needs_rename:
+            original_path = workspace / page_id
+            tmp_name = f"_reorder_tmp_{uid}_{page_id}"
+            tmp_path = workspace / tmp_name
+            original_path.rename(tmp_path)
+            tmp_mapping[page_id] = tmp_path
+            logger.info(f"Phase-1 rename: {page_id} → {tmp_name}")
+
+        # Phase 2: rename tmp folders to final names and update YAMLs
+        renamed_pages = []
+        for page_id in needs_rename:
+            tmp_path = tmp_mapping[page_id]
+            new_num = new_numbers[page_id]
+
+            m = folder_pattern.match(page_id)
+            slug = m.group(2) if m else page_id
+            new_folder_name = f"pagina_{new_num:02d}_{slug}"
+            new_path = workspace / new_folder_name
+            tmp_path.rename(new_path)
+            logger.info(f"Phase-2 rename: {tmp_path.name} → {new_folder_name}")
+
+            # Update page_number in page_config.yaml
+            cfg_path = new_path / "page_config.yaml"
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            data["page_number"] = new_num
+            if "photo_captions" not in data:
+                data["photo_captions"] = {}
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+
+            renamed_pages.append({"old_id": page_id, "new_id": new_folder_name})
+
+        return {"success": True, "error": None, "renamed_pages": renamed_pages}
+
+    except Exception as e:
+        logger.error(f"Failed to reorder pages: {e}")
+        return {"success": False, "error": str(e), "renamed_pages": []}
 
 
 def update_page_title(page_folder: Path, new_titles: list[str]) -> bool:

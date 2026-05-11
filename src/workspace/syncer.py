@@ -47,6 +47,7 @@ from src.workspace.manifest import (
     workspace_has_manifests,
     write_page_manifest,
 )
+from src.workspace.reconciler import _sub_group_from_source_path
 
 if TYPE_CHECKING:
     from src.ingestion.scanner import PhotoInfo
@@ -461,18 +462,57 @@ def apply_sync(
             logger.warning(f"Failed removing {img_path}: {e}")
         _cb({"step": "removing_photos", "current": i, "total": len(diff.removed_photos)})
 
-    # ── 2. Rename section titles ────────────────────────────────────────
-    if diff.renamed_sections:
-        sid_to_new_title = {r.section_id: r.new_title for r in diff.renamed_sections}
-        # reload pages after photo deletions
-        pages = read_page_configs(workspace, cfg)
-        _backfill_workspace_section_ids(workspace, pages, source_root)
-        for p in pages:
-            if p.section_id and p.section_id in sid_to_new_title:
-                if p.section_titles:
-                    p.section_titles[0] = sid_to_new_title[p.section_id]
-                else:
-                    p.section_titles = [sid_to_new_title[p.section_id]]
+    # ── 2. Rebuild section titles for all content pages ─────────────────
+    # Always rebuild section_titles from (section_id, sub_group_ids) so the
+    # FS is the single source of truth: top-level folder rename and sub-folder
+    # renames both propagate without manual override.
+    sid_to_new_title = {r.section_id: r.new_title for r in diff.renamed_sections}
+    pages = read_page_configs(workspace, cfg)
+    _backfill_workspace_section_ids(workspace, pages, source_root)
+    titles_changed = False
+
+    # ── 2a. Backfill sub_group_ids for legacy pages (pre-2026-05-10 workspaces) ──
+    # Pages created before sub_group_ids was introduced have an empty list.
+    # Derive the sub-groups from each photo's source_path in the manifest so the
+    # title-rebuild loop below can produce the two-element section_titles correctly.
+    for p in pages:
+        if p.is_cover or p.is_backcover:
+            continue
+        if p.sub_group_ids:
+            continue  # already populated — idempotent guard
+        manifest = read_page_manifest(p.folder)
+        if manifest is None:
+            logger.warning(f"No manifest found for {p.folder.name}; skipping sub_group_ids backfill")
+            continue
+        seen: list[str] = []
+        for entry in manifest.photos.values():
+            sg = _sub_group_from_source_path(entry.source_path)
+            if sg and sg not in seen:
+                seen.append(sg)
+        if seen:
+            p.sub_group_ids = seen
+            titles_changed = True
+
+    for p in pages:
+        if p.is_cover or p.is_backcover:
+            continue
+        # Resolve current top-level title: prefer the renamed-source title
+        # if section_id matches; otherwise keep current [0] (first sync of an
+        # unchanged page just rewrites the same value).
+        if p.section_id and p.section_id in sid_to_new_title:
+            top_title = sid_to_new_title[p.section_id]
+        elif p.section_titles:
+            top_title = p.section_titles[0]
+        else:
+            top_title = ""
+        new_titles = [top_title] if top_title else []
+        if p.sub_group_ids:
+            sub_label = " / ".join(prettify_folder_name(s) for s in p.sub_group_ids)
+            new_titles.append(sub_label)
+        if list(p.section_titles) != new_titles:
+            p.section_titles = new_titles
+            titles_changed = True
+    if titles_changed or diff.renamed_sections:
         write_page_configs(pages)
 
     # ── 3. Remove pages of removed sections ─────────────────────────────
@@ -532,17 +572,35 @@ def apply_sync(
                     new_folder_name = f"pagina_{_next_global_seq(workspace):02d}_{title_slug}"
                     new_dir = workspace / new_folder_name
                     new_dir.mkdir(exist_ok=True)
+                    sg = getattr(ph, "sub_group", "") or ""
+                    new_sub_group_ids = [sg] if sg else []
+                    new_titles = [section_titles[0]] if section_titles else []
+                    if new_sub_group_ids:
+                        new_titles.append(" / ".join(prettify_folder_name(s) for s in new_sub_group_ids))
                     new_pc = PageConfig(
                         folder=new_dir,
                         page_number=0,
                         photo_count=0,
-                        section_titles=section_titles,
+                        section_titles=new_titles,
                         layout_mode=layout_mode,
                         section_id=sid,
+                        sub_group_ids=new_sub_group_ids,
                     )
                     write_page_configs([new_pc])
                     target_page = new_pc
                     manifest = PageManifest(folder=new_dir, section_id=sid)
+                else:
+                    # Append sub_group to target_page if photo introduces a new one
+                    sg = getattr(ph, "sub_group", "") or ""
+                    if sg and sg not in target_page.sub_group_ids:
+                        target_page.sub_group_ids = list(target_page.sub_group_ids) + [sg]
+                        # rebuild title[1]
+                        top = target_page.section_titles[0] if target_page.section_titles else ""
+                        new_titles = [top] if top else []
+                        if target_page.sub_group_ids:
+                            new_titles.append(" / ".join(prettify_folder_name(s) for s in target_page.sub_group_ids))
+                        target_page.section_titles = new_titles
+                        write_page_configs([target_page])
 
                 seq = _next_image_seq(target_page.folder)
                 ext = ph.path.suffix.lower()
@@ -612,13 +670,23 @@ def apply_sync(
                             sha1=sha,
                         )
 
+                page_sub_groups: list[str] = []
+                for ph in chunk:
+                    sg = getattr(ph, "sub_group", "") or ""
+                    if sg and sg not in page_sub_groups:
+                        page_sub_groups.append(sg)
+                titles = [title]
+                if page_sub_groups:
+                    titles.append(" / ".join(prettify_folder_name(s) for s in page_sub_groups))
+
                 pc = PageConfig(
                     folder=page_dir,
                     page_number=0,
                     photo_count=len(manifest_entries),
-                    section_titles=[title],
+                    section_titles=titles,
                     layout_mode=random.choice(layout_modes),
                     section_id=ns.section_id,
+                    sub_group_ids=list(page_sub_groups),
                 )
                 write_page_configs([pc])
                 write_page_manifest(PageManifest(

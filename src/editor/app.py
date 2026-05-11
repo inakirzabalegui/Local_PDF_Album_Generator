@@ -28,6 +28,26 @@ from src.editor import config_routes  # noqa: F401, E402
 from src.editor import render_routes  # noqa: F401, E402
 
 
+@app.after_request
+def _cache_versioned_vendor_assets(response):
+    """Long-lived caching for self-hosted, versioned third-party assets.
+
+    pdf.min.js and pdf.worker.min.js together weigh ~1.3 MB. With SEND_FILE_MAX_AGE_DEFAULT
+    set to 0 (dev convenience), the browser re-downloads them on every reload.
+    Override here for /static/vendor/* only — those files are version-pinned (see
+    VERSION marker) and replaced atomically by the auto-updater, so caching them
+    aggressively is safe.
+    """
+    try:
+        from flask import request
+
+        if request.path.startswith("/static/vendor/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    except Exception:  # noqa: BLE001
+        pass
+    return response
+
+
 def validate_workspace(workspace_path: Path) -> bool:
     """Check if path is a valid album workspace.
 
@@ -102,6 +122,20 @@ def app_index():
     content_pages = [p for p in pages if not p.is_cover and not p.is_backcover]
     content_pages.sort(key=lambda p: p.page_number)
 
+    # Pre-generate the preview PDF for the first content page if missing, so the
+    # initial canvas render is instant. Subsequent pages still generate on demand
+    # (cheap once cached). Failures are silent — the lazy /api/.../preview path
+    # will still cover them.
+    if content_pages:
+        first = content_pages[0]
+        try:
+            from src.editor.workspace_manager import generate_preview as _gen_first_preview
+
+            if not list(first.folder.glob("page_*.pdf")):
+                _gen_first_preview(first.folder, global_cfg)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Pre-generation of first-page preview failed: %s", exc)
+
     return render_template(
         "app.html",
         album_title=global_cfg.project_title,
@@ -114,9 +148,13 @@ def app_index():
                 "title": p.section_titles[0]
                 if p.section_titles
                 else f"Page {p.page_number}",
+                "subtitle": p.section_titles[1]
+                if len(p.section_titles) > 1
+                else "",
                 "photo_count": p.photo_count,
                 "layout_mode": p.layout_mode,
                 "completed": p.completed,
+                "section_id": p.section_id,
             }
             for p in content_pages
         ],
@@ -436,6 +474,19 @@ def launch_app(port: int = 5050, auto_open: bool = True):
         port: Port to run the server on (default: 5050)
         auto_open: Whether to automatically open browser (default: True)
     """
+    # Auto-update PDF.js vendor files before starting the server
+    try:
+        from src.editor.pdfjs_updater import check_and_update_pdfjs
+
+        vendor_dir = Path(__file__).parent / "static" / "vendor" / "pdfjs"
+        result = check_and_update_pdfjs(vendor_dir)
+        if result["updated"]:
+            logger.info("PDF.js updated: %s → %s", result["from"], result["to"])
+        elif result["error"]:
+            logger.warning("PDF.js update check failed: %s", result["error"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PDF.js updater raised unexpectedly: %s", exc)
+
     print(f"🚀 Iniciando aplicación unificada...")
     print(f"🌐 URL: http://localhost:{port}")
     print(f"")

@@ -8,7 +8,23 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..900,0..100;1,9..144,300..900,0..100&family=Instrument+Sans:ital,wght@0,400..700;1,400..700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/editor.css') }}">
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+    <!-- Critical inline CSS: prevents flash of unstyled background while editor.css loads. -->
+    <style>
+      :root { --paper: #f1ece1; --ink: #1a1814; --vermilion: #c14a2c; }
+      html, body { background: var(--paper); color: var(--ink); margin: 0; min-height: 100vh; }
+      body { font-family: 'Instrument Sans', system-ui, -apple-system, sans-serif; }
+      body.dark-mode { background: #0d0b08; color: #f1ece1; }
+    </style>
+    <!-- defer: lets the browser keep parsing HTML in parallel with PDF.js download. -->
+    <script defer src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+    <script defer src="{{ url_for('static', filename='vendor/pdfjs/pdf.min.js') }}"></script>
+    <script defer>
+      // Runs after pdf.min.js (defer preserves document order).
+      if (typeof pdfjsLib !== 'undefined') {
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "{{ url_for('static', filename='vendor/pdfjs/pdf.worker.min.js') }}";
+      }
+    </script>
     <style>
         /* ── app.html-specific refinements ────────────────────────────── */
 
@@ -85,7 +101,6 @@
                     <button id="lang-btn" onclick="toggleLanguage()" title="Toggle language" style="padding: 8px 12px; background: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: var(--border-radius-sm); cursor: pointer; font-weight: 600;">ES</button>
                     <button id="debug-btn" class="btn btn-secondary" data-i18n-title="header.debug">{ }</button>
                     <button id="undo-btn" class="btn btn-secondary" disabled data-i18n="header.undo">↶ Deshacer</button>
-                    <button id="save-btn" class="btn btn-primary" data-i18n="header.save">💾 Guardar</button>
                     <button id="exit-btn" class="btn btn-secondary" data-i18n="header.exit">✕ Salir</button>
                     <label class="theme-switch" data-i18n-title="header.dark_mode" title="Modo oscuro">
                         <input type="checkbox" id="theme-toggle">
@@ -172,8 +187,6 @@
                 <!-- Right area: action bar on top, then sidebar + preview -->
                 <div class="tab-main">
                     <div class="action-bar" id="album-action-bar">
-                        <button id="rename-page-btn" class="btn btn-secondary">✏️ Renombrar Página</button>
-                        <button id="rename-subtitle-btn" class="btn btn-secondary">📝 Renombrar Subtítulo</button>
                         <button id="layout-mode-btn" class="btn btn-secondary">🎨 Modo Layout</button>
                         <button id="shuffle-layout-btn" class="btn btn-secondary" title="Reordenar aleatoriamente las fotos (tecla S)">🎲 Aleatorio</button>
                         <button id="explode-page-btn" class="btn btn-secondary">💥 Explotar Página en Dos</button>
@@ -197,12 +210,15 @@
                         <!-- PDF preview -->
                         <main class="preview-area">
                             <div class="preview-container">
-                                <iframe
+                                <!-- Skeleton: A4-shaped placeholder visible until the canvas renders.
+                                     Hidden by album.js as soon as the first page successfully renders. -->
+                                <div id="pdf-preview-skeleton" class="pdf-skeleton" aria-hidden="true"></div>
+                                <canvas
                                     id="pdf-preview"
-                                    class="pdf-iframe"
+                                    class="pdf-canvas"
                                     data-i18n-title="image.page_preview"
                                     title="Vista previa de página"
-                                ></iframe>
+                                ></canvas>
                             </div>
                             <div id="loading-overlay" class="loading-overlay" style="display: none;">
                                 <div class="loading-spinner"></div>
@@ -306,8 +322,8 @@
                                     </tr>
                                     <tr>
                                         <td><kbd>R</kbd></td>
-                                        <td data-i18n="help.key_rename">Renombrar evento / página</td>
-                                        <td data-i18n="help.scope_both">Fuente · Edición</td>
+                                        <td data-i18n="help.key_rename">Renombrar evento</td>
+                                        <td data-i18n="help.scope_source">Fuente</td>
                                     </tr>
                                     <tr>
                                         <td><kbd>D</kbd></td>
@@ -339,11 +355,6 @@
                                         <td data-i18n="help.key_nav_right">Cambiar foco: panel → fotos (Edición: también navega a página siguiente)</td>
                                         <td data-i18n="help.scope_both">Fuente · Edición</td>
                                     </tr>
-                                    <tr>
-                                        <td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> + <kbd>S</kbd></td>
-                                        <td data-i18n="help.key_save">Guardar cambios</td>
-                                        <td data-i18n="help.scope_edition">Edición</td>
-                                    </tr>
                                 </tbody>
                             </table>
                         </div>
@@ -363,8 +374,6 @@
                             <div class="help-actions-col">
                                 <h4 class="help-section-title" data-i18n="help.section_edition_actions">Acciones en Edición</h4>
                                 <ul class="help-actions-list">
-                                    <li data-i18n="help.action_rename_page">✏️ <strong>Renombrar Página</strong> — edita el título de sección</li>
-                                    <li data-i18n="help.action_rename_subtitle">📝 <strong>Renombrar Subtítulo</strong> — edita el subtítulo de la página</li>
                                     <li data-i18n="help.action_layout">🎨 <strong>Modo Layout</strong> — elige entre Mesa de Luz, Grid Compacto o Híbrido</li>
                                     <li data-i18n="help.action_shuffle">🎲 <strong>Aleatorio</strong> — reordena visualmente las fotos con una nueva semilla de layout (tecla S)</li>
                                     <li data-i18n="help.action_explode">💥 <strong>Explotar Página</strong> — divide la página en dos (útil si hay demasiadas fotos)</li>
@@ -383,7 +392,6 @@
                                 <li data-i18n="help.header_open_folder">📁 <strong>Abrir carpeta</strong> — abre un selector nativo para cambiar de álbum</li>
                                 <li data-i18n="help.header_regen">🔄 <strong>Regenerar Álbum</strong> — disponible desde cualquier pestaña</li>
                                 <li data-i18n="help.header_undo">↶ <strong>Deshacer</strong> — revierte el último cambio en Edición</li>
-                                <li data-i18n="help.header_save">💾 <strong>Guardar</strong> — guarda todos los cambios pendientes</li>
                                 <li data-i18n="help.header_exit">✕ <strong>Salir</strong> — cierra el editor</li>
                                 <li data-i18n="help.header_lang">ES/EN <strong>Idioma</strong> — alterna entre español e inglés</li>
                                 <li data-i18n="help.header_debug">{ } <strong>Debug</strong> — muestra el log de depuración interno</li>

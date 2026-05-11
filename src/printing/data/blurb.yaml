@@ -54,6 +54,51 @@ products:
         cover_trim_w_cm: 64.734
     default_paper_variant: standard
 
+  # ImageWrap: cover wraps directly around the boards — no flaps, no hinges.
+  # Interior page specs are identical to Dust Jacket; only the cover geometry differs
+  # (cover_trim_w is much narrower: 44.661 cm vs 64.77 cm because there are no flap panels).
+  standard_portrait_hardcover_imagewrap:
+    label: "Standard Portrait — Hardcover, ImageWrap"
+    page:
+      trim_w_cm: 20.32
+      trim_h_cm: 25.401
+      bleed:
+        top_cm: 0.317
+        bottom_cm: 0.317
+        outside_cm: 0.317
+        inside_cm: 0.0
+      safe_insets:
+        outside_cm: 0.635
+        binding_cm: 1.27
+        top_cm: 0.635
+        bottom_cm: 0.635
+    cover:
+      mode: wraparound
+      bleed_cm: 0.776
+      hinge_w_cm: 0.0
+      safe_inset_cm: 0.635
+      trim_h_cm: 26.035
+    paper_variants:
+      standard:
+        label: "Standard"
+        spine_caliper_cm_per_page: 0.01058
+        spine_offset_cm: -0.211
+        max_pages: 440
+        cover_trim_w_cm: 44.661
+      premium:
+        label: "Premium (lustre or matte)"
+        spine_caliper_cm_per_page: 0.01148
+        spine_offset_cm: 0.032
+        max_pages: 240
+        cover_trim_w_cm: 44.661
+      proline:
+        label: "ProLine (uncoated or pearl)"
+        spine_caliper_cm_per_page: 0.01148
+        spine_offset_cm: 0.032
+        max_pages: 240
+        cover_trim_w_cm: 44.661
+    default_paper_variant: standard
+
   premium_magazine_85x11:
     label: "Premium Magazine — 8.5×11 in (22×28 cm)"
     page:

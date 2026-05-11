@@ -175,9 +175,57 @@ async function syncAlbumFromHeader() {
 
     const s = diff.summary;
     const totalChanges = s.added + s.removed + s.renamed + s.new_sections + s.removed_sections;
+
+    // No source-side changes — but apply_sync's title-rebuild step still runs
+    // and migrates legacy YAMLs (backfills sub_group_ids from the manifest,
+    // reconstructs section_titles[1] for sub-grouped pages). Skip the confirm
+    // dialog in this case; the user already clicked the Sincronizar button.
     if (totalChanges === 0) {
-        showToast('Workspace ya sincronizado. Nada que hacer.', { type: 'info' });
-        if (btn) btn.disabled = false;
+        showToast('Sin cambios desde origen — refrescando títulos y subtítulos…', { type: 'info' });
+        if (typeof showGenerationModal === 'function') showGenerationModal();
+        try {
+            const response = await fetch('/api/source/sync-album/apply', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({}),
+            });
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error || `HTTP ${response.status}`);
+            }
+            // Drain the SSE stream until done (no progress events expected
+            // because there are no photos to add/remove).
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const parts = buffer.split('\n');
+                buffer = parts.pop();
+                for (const line of parts) {
+                    if (!line.startsWith('data: ')) continue;
+                    let event;
+                    try { event = JSON.parse(line.slice(6)); } catch { continue; }
+                    if (event.step === 'done') {
+                        if (typeof hideGenerationModal === 'function') hideGenerationModal();
+                        showToast('Títulos actualizados.', { type: 'success' });
+                        setTimeout(() => window.location.reload(), 400);
+                        return;
+                    } else if (event.step === 'error') {
+                        throw new Error(event.message || 'Error desconocido');
+                    }
+                }
+            }
+            // Stream ended without explicit done — reload anyway.
+            if (typeof hideGenerationModal === 'function') hideGenerationModal();
+            window.location.reload();
+        } catch (e) {
+            if (typeof hideGenerationModal === 'function') hideGenerationModal();
+            showToast('Error refrescando títulos: ' + e.message, { type: 'error' });
+            if (btn) btn.disabled = false;
+        }
         return;
     }
 

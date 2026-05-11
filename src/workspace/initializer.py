@@ -176,9 +176,6 @@ def create_workspace(
         title_slug = folder_name_to_slug(prettify_folder_name(source_group))
         section_id = _resolve_section_id(source_group)
 
-        # Track which sub_groups have already had their banner shown
-        seen_sub_groups: set[str] = set()
-
         for chunk_idx, chunk in enumerate(chunks, 1):
             folder_name = f"pagina_{page_number:02d}_{title_slug}"
             page_dir = workspace / folder_name
@@ -212,16 +209,16 @@ def create_workspace(
                     photos=manifest_entries,
                 ))
 
-            # Determine if any new sub_groups start on this page
-            new_subs = []
+            # Collect unique sub_groups present on this page (preserving order)
+            page_sub_groups: list[str] = []
             for photo in chunk:
-                if photo.sub_group and photo.sub_group not in seen_sub_groups:
-                    seen_sub_groups.add(photo.sub_group)
-                    new_subs.append(photo.sub_group)
+                sg = photo.sub_group
+                if sg and sg not in page_sub_groups:
+                    page_sub_groups.append(sg)
 
             titles = [section_title]
-            if new_subs:
-                sub_label = " / ".join(prettify_folder_name(s) for s in new_subs)
+            if page_sub_groups:
+                sub_label = " / ".join(prettify_folder_name(s) for s in page_sub_groups)
                 titles.append(sub_label)
                 logger.debug(f"  Sub-banner on page {page_number}: {sub_label}")
 
@@ -240,6 +237,7 @@ def create_workspace(
                     section_titles=titles,
                     layout_mode=selected_mode,
                     section_id=section_id,
+                    sub_group_ids=list(page_sub_groups),
                 )
             )
             page_number += 1

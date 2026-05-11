@@ -12,13 +12,39 @@ import math
 import shutil
 from pathlib import Path
 
-from src.utils.naming import folder_name_to_slug
+from src.utils.naming import folder_name_to_slug, prettify_folder_name
 from src.workspace.config import (
     GlobalConfig,
     PageConfig,
     VALID_IMAGE_EXTENSIONS,
     write_page_configs,
 )
+from src.workspace.manifest import (
+    PageManifest,
+    PhotoManifestEntry,
+    read_page_manifest,
+    write_page_manifest,
+)
+
+
+def _sub_group_from_source_path(source_path: str) -> str:
+    """Extract sub_group (second segment of POSIX rel path), or "" for top-level."""
+    if not source_path:
+        return ""
+    parts = source_path.split("/")
+    # parts[0] = source_group, parts[1] = sub_group (if photo lives in subfolder)
+    if len(parts) >= 3:
+        return parts[1]
+    return ""
+
+
+def _rebuild_titles(top_title: str, sub_group_ids: list[str]) -> list[str]:
+    titles: list[str] = []
+    if top_title:
+        titles.append(top_title)
+    if sub_group_ids:
+        titles.append(" / ".join(prettify_folder_name(s) for s in sub_group_ids))
+    return titles
 
 logger = logging.getLogger("album")
 
@@ -80,15 +106,22 @@ def reconcile(
     target_per_page = (cfg.photos_per_page_min + cfg.photos_per_page_max) // 2
     needs_work = False
     for group_pages in groups.values():
-        counts = [len(p.image_files()) for p in group_pages]
+        # Only the non-completed (free) slice participates in reconciliation.
+        free_pages = [p for p in group_pages if not p.completed]
+        counts = [len(p.image_files()) for p in free_pages]
+        # An empty free page in a section that has photos elsewhere needs work.
         if 0 in counts:
             needs_work = True
             break
-        total = sum(counts)
-        expected = max(1, math.ceil(total / target_per_page))
-        if expected != len(group_pages):
-            needs_work = True
-            break
+        total_free = sum(counts)
+        if free_pages:
+            expected = max(1, math.ceil(total_free / target_per_page)) if total_free else 0
+            if expected != len(free_pages) and total_free > 0:
+                needs_work = True
+                break
+            if total_free == 0 and len(free_pages) > 1:
+                needs_work = True
+                break
 
     if not needs_work:
         logger.info("No deletions detected — workspace is consistent.")
@@ -190,45 +223,110 @@ def _reconcile_section(
     workspace: Path,
     target_per_page: int,
 ) -> list[PageConfig]:
-    """Reconcile a single section group. Returns surviving PageConfigs."""
-    all_photos: list[Path] = []
-    for page in group_pages:
-        all_photos.extend(page.image_files())
+    """Reconcile a single section group. Returns surviving PageConfigs.
 
+    Pages with `completed: true` are immutable: their current photo set is
+    preserved verbatim (photos whose sources were deleted have already been
+    removed from disk and will simply not appear in `image_files()`).
+    Only non-completed pages absorb redistribution / new photos.
+    """
     section_label = group_pages[0].section_titles[0] if group_pages[0].section_titles else "unknown"
+
+    completed_pages = [p for p in group_pages if p.completed]
+    free_pages = [p for p in group_pages if not p.completed]
+
+    # Warn about empty completed pages (all source photos deleted).
+    for p in completed_pages:
+        if not p.image_files():
+            logger.warning(
+                f"Page {p.page_number} (completed) is now empty after source "
+                f"deletions; leaving as an empty completed page. The user must "
+                f"resolve it manually."
+            )
+
+    # Warn about completed pages that fall outside min/max.
+    for p in completed_pages:
+        c = len(p.image_files())
+        if c and (c < cfg.photos_per_page_min or c > cfg.photos_per_page_max):
+            logger.warning(
+                f"Page {p.page_number} (completed) has {c} photos "
+                f"(outside {cfg.photos_per_page_min}-{cfg.photos_per_page_max}); "
+                f"leaving as-is per user lock."
+            )
+
+    # Gather photos only from the free (non-completed) pages.
+    all_photos: list[Path] = []
+    photo_meta: dict[str, tuple[str, PhotoManifestEntry | None]] = {}
+    for page in free_pages:
+        page_manifest = read_page_manifest(page.folder)
+        for img_path in page.image_files():
+            all_photos.append(img_path)
+            entry = None
+            sub_group = ""
+            if page_manifest is not None:
+                entry = page_manifest.photos.get(img_path.name)
+                if entry is not None:
+                    sub_group = _sub_group_from_source_path(entry.source_path)
+            photo_meta[str(img_path)] = (sub_group, entry)
+
     logger.debug(
         f"Reconciling section '{section_label}': "
-        f"{len(all_photos)} photos across {len(group_pages)} pages"
+        f"{len(all_photos)} free photos across {len(free_pages)} non-completed pages "
+        f"({len(completed_pages)} completed pages frozen)"
     )
 
-    if not all_photos:
+    # Section emptied of free photos AND no completed pages: drop everything.
+    if not all_photos and not completed_pages:
         for page in group_pages:
             if page.folder.exists():
                 shutil.rmtree(page.folder)
                 logger.debug(f"  Removed empty folder: {page.folder.name}")
         return []
 
+    # No free photos but completed pages exist: drop empty free folders, keep frozen.
+    if not all_photos:
+        for page in free_pages:
+            if page.folder.exists():
+                shutil.rmtree(page.folder)
+                logger.debug(f"  Removed empty free folder: {page.folder.name}")
+        return list(completed_pages)
+
     num_pages_needed = max(1, math.ceil(len(all_photos) / target_per_page))
 
-    counts = [len(p.image_files()) for p in group_pages]
-    if 0 not in counts and num_pages_needed == len(group_pages):
-        return group_pages
+    counts = [len(p.image_files()) for p in free_pages]
+    if free_pages and 0 not in counts and num_pages_needed == len(free_pages):
+        # Free slice already balanced. Return free + completed unchanged.
+        return list(group_pages)
+
+    # If no free pages exist but new photos do, we must create overflow pages.
+    if not free_pages:
+        # All section pages are completed; the only way photos end up in
+        # all_photos is impossible here (we only collected from free pages).
+        # Defensive: return as-is.
+        return list(completed_pages)
 
     logger.info(
-        f"  Redistributing '{section_label}': "
-        f"{len(all_photos)} photos → {num_pages_needed} pages"
+        f"  Redistributing '{section_label}' (free slice): "
+        f"{len(all_photos)} photos → {num_pages_needed} pages "
+        f"({len(completed_pages)} completed pages untouched)"
     )
+
+    # The redistribution loop below operates on `group_pages` aliased to free_pages
+    # so the existing rewrite logic keeps working.
+    group_pages = free_pages
 
     chunk_sizes = _even_chunks(len(all_photos), num_pages_needed)
 
-    # Move all photos to a temp staging directory
+    # Move all photos to a temp staging directory, carrying per-photo metadata.
     temp_dir = workspace / "_reconcile_staging"
     temp_dir.mkdir(exist_ok=True)
     staged: list[Path] = []
+    staged_meta: list[tuple[str, PhotoManifestEntry | None]] = []
     for photo in all_photos:
         dst = temp_dir / f"{len(staged):05d}{photo.suffix.lower()}"
         shutil.move(str(photo), str(dst))
         staged.append(dst)
+        staged_meta.append(photo_meta.get(str(photo), ("", None)))
 
     # Build page configs for each chunk, reusing existing settings
     result_pages: list[PageConfig] = []
@@ -236,6 +334,7 @@ def _reconcile_section(
 
     for chunk_idx, size in enumerate(chunk_sizes):
         chunk = staged[photo_idx : photo_idx + size]
+        chunk_meta = staged_meta[photo_idx : photo_idx + size]
         photo_idx += size
 
         if chunk_idx < len(group_pages):
@@ -251,21 +350,46 @@ def _reconcile_section(
                 layout_seed=ref.layout_seed + chunk_idx * 7,
                 section_titles=list(ref.section_titles),
                 layout_mode=ref.layout_mode,
+                section_id=ref.section_id,
             )
 
         # Clear any leftover images in the folder
         for old in page.image_files():
             old.unlink()
 
-        # Place chunk photos
-        for seq, photo in enumerate(chunk, 1):
+        # Place chunk photos and rebuild manifest entries
+        new_manifest_photos: dict[str, PhotoManifestEntry] = {}
+        page_sub_groups: list[str] = []
+        for seq, (photo, (sub_group, entry)) in enumerate(zip(chunk, chunk_meta), 1):
             ext = photo.suffix.lower()
             if ext not in (".jpg", ".jpeg"):
                 ext = ".jpg"
-            dst = page.folder / f"img_{seq:03d}{ext}"
+            img_name = f"img_{seq:03d}{ext}"
+            dst = page.folder / img_name
             shutil.move(str(photo), str(dst))
+            if entry is not None:
+                new_manifest_photos[img_name] = PhotoManifestEntry(
+                    image_name=img_name,
+                    source_path=entry.source_path,
+                    source_mtime=entry.source_mtime,
+                    sha1=entry.sha1,
+                )
+            if sub_group and sub_group not in page_sub_groups:
+                page_sub_groups.append(sub_group)
 
         page.photo_count = size
+        page.sub_group_ids = page_sub_groups
+        top_title = page.section_titles[0] if page.section_titles else ""
+        page.section_titles = _rebuild_titles(top_title, page_sub_groups)
+
+        # Persist refreshed manifest if we have any entries to write
+        if new_manifest_photos:
+            write_page_manifest(PageManifest(
+                folder=page.folder,
+                section_id=page.section_id,
+                photos=new_manifest_photos,
+            ))
+
         result_pages.append(page)
 
     # Remove excess page folders
@@ -278,7 +402,8 @@ def _reconcile_section(
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
 
-    return result_pages
+    # Include the frozen completed pages alongside the redistributed free pages.
+    return result_pages + list(completed_pages)
 
 
 def _even_chunks(total: int, num_pages: int) -> list[int]:
