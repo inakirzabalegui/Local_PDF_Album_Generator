@@ -114,6 +114,8 @@ def app_index():
             album_title="(álbum pendiente)",
             total_pages=0,
             has_pages=False,
+            cover=None,
+            backcover=None,
             pages=[],
         )
     global_cfg, pages = load_workspace(workspace)
@@ -121,6 +123,19 @@ def app_index():
     # Filter out cover and backcover, sort by page number
     content_pages = [p for p in pages if not p.is_cover and not p.is_backcover]
     content_pages.sort(key=lambda p: p.page_number)
+    cover_page = next((p for p in pages if p.is_cover), None)
+    backcover_page = next((p for p in pages if p.is_backcover), None)
+
+    def _cover_payload(p):
+        if p is None:
+            return None
+        imgs = p.image_files()
+        return {
+            "id": p.folder.name,
+            "kind": "cover" if p.is_cover else "backcover",
+            "image": imgs[0].name if imgs else "",
+            "completed": bool(p.completed),
+        }
 
     # Pre-generate the preview PDF for the first content page if missing, so the
     # initial canvas render is instant. Subsequent pages still generate on demand
@@ -141,6 +156,8 @@ def app_index():
         album_title=global_cfg.project_title,
         total_pages=len(content_pages),
         has_pages=len(content_pages) > 0,
+        cover=_cover_payload(cover_page),
+        backcover=_cover_payload(backcover_page),
         pages=[
             {
                 "id": p.folder.name,

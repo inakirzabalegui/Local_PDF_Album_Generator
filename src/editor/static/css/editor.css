@@ -500,29 +500,29 @@ body::after {
     outline-offset: -2px;
 }
 
-/* Page panel reorder sortable states */
-.page-list-item.page-sortable-ghost {
+/* Page panel reorder sortable states — drag disabled (plan 2026-05-13) */
+/* .page-list-item.page-sortable-ghost {
     opacity: 0.35;
     background-color: var(--vermilion-wash);
-}
+} */
 
-.page-list-item.page-sortable-chosen {
+/* .page-list-item.page-sortable-chosen {
     cursor: grabbing;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
-}
+} */
 
-.page-list-item.page-drag-forbidden {
+/* .page-list-item.page-drag-forbidden {
     outline: 2px solid #cc3333;
     outline-offset: -2px;
     animation: page-drag-shake 0.25s ease;
-}
+} */
 
-@keyframes page-drag-shake {
+/* @keyframes page-drag-shake {
     0%   { transform: translateX(0); }
     25%  { transform: translateX(-4px); }
     75%  { transform: translateX(4px); }
     100% { transform: translateX(0); }
-}
+} */
 
 .page-list-num {
     font-family: var(--font-mono);
@@ -1871,4 +1871,215 @@ body.dark-mode kbd {
     margin: 40px 0;
     text-align: center;
     color: var(--color-text-secondary, #888);
+}
+
+/* ── Cover / Backcover items in the page panel ───────────────────────────── */
+.cover-list-item {
+    background-color: color-mix(in srgb, var(--vermilion) 6%, transparent);
+    border-left: 2px solid var(--vermilion);
+    margin-bottom: 4px;
+}
+.cover-list-item.cover-backcover {
+    margin-bottom: 0;
+    margin-top: 4px;
+}
+.cover-list-item .page-list-num.cover-chip {
+    font-family: var(--font-serif);
+    font-style: italic;
+    color: var(--vermilion);
+    font-size: 13px;
+    text-align: center;
+    min-width: 22px;
+}
+.cover-list-item .page-list-title {
+    font-style: italic;
+    font-variation-settings: "opsz" 14, "wght" 500;
+}
+.cover-list-item.drag-over {
+    background-color: var(--vermilion-wash);
+    outline: 2px dashed var(--vermilion);
+    outline-offset: -3px;
+}
+
+/* ── Cover detail view (replaces the PDF canvas) ─────────────────────────── */
+.cover-detail-view {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: transparent;
+}
+.cover-detail-view.hidden { display: none; }
+
+#pdf-preview.hidden,
+#pdf-preview-skeleton.hidden { display: none !important; }
+
+.cover-detail-card {
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 28px;
+    max-width: 540px;
+    width: 100%;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.08);
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+}
+
+.cover-detail-chip {
+    display: inline-block;
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--vermilion);
+    border: 1px solid var(--vermilion);
+    border-radius: 999px;
+    padding: 3px 12px;
+}
+
+.cover-detail-image-wrap {
+    width: 100%;
+    max-height: 60vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    overflow: hidden;
+    background: #f4ede2;
+    min-height: 240px;
+}
+.cover-detail-image-wrap img {
+    max-width: 100%;
+    max-height: 60vh;
+    object-fit: contain;
+    display: block;
+}
+
+.cover-detail-actions {
+    display: flex;
+    gap: 12px;
+}
+
+.cover-detail-hint {
+    font-family: var(--font-serif);
+    font-style: italic;
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    margin: 0;
+}
+
+/* ── Cover picker modal ──────────────────────────────────────────────────── */
+.cover-picker-modal-content {
+    width: min(900px, 92vw);
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+}
+.cover-picker-header {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--rule);
+}
+.cover-picker-header h3 {
+    margin: 0;
+    flex: 1;
+    font-family: var(--font-serif);
+    font-variation-settings: "opsz" 18, "wght" 480;
+    font-size: 17px;
+}
+.cover-picker-close {
+    background: transparent;
+    border: none;
+    font-size: 18px;
+    cursor: pointer;
+    color: var(--ink-faint);
+    padding: 4px 8px;
+}
+.cover-picker-close:hover { color: var(--ink); }
+
+.cover-picker-filter {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--rule);
+}
+.cover-picker-filter-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 12px;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    outline: none;
+    transition: border-color var(--t-fast);
+}
+.cover-picker-filter-input:focus {
+    border-color: var(--vermilion);
+}
+.cover-picker-filter-input::placeholder {
+    color: var(--ink-faint);
+}
+
+.cover-picker-body {
+    overflow-y: auto;
+    padding: 18px;
+    flex: 1;
+}
+.cover-picker-loading,
+.cover-picker-empty,
+.cover-picker-error {
+    text-align: center;
+    color: var(--ink-faint);
+    font-style: italic;
+    margin: 60px 0;
+}
+
+.cover-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+}
+
+.cover-picker-tile {
+    border: 1px solid var(--rule);
+    background: var(--paper);
+    border-radius: 4px;
+    cursor: pointer;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: border-color var(--t-fast), transform var(--t-fast);
+    padding: 0;
+    text-align: left;
+}
+.cover-picker-tile:hover {
+    border-color: var(--vermilion);
+    transform: translateY(-1px);
+}
+.cover-picker-tile img {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    display: block;
+}
+.cover-picker-tile-caption {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--ink-faint);
+    padding: 6px 8px;
+    border-top: 1px solid var(--rule);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }

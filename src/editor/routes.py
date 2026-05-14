@@ -20,28 +20,47 @@ from src.editor.workspace_manager import (
     update_photo_caption,
     generate_preview,
     get_page_info,
+    get_cover_info,
+    set_cover_photo,
     move_photos,
     explode_page,
 )
 from src.editor.trash import restore_from_trash
 from src.workspace.config import VALID_IMAGE_EXTENSIONS
+from src.workspace.manifest import add_photo_to_manifest
+from src.workspace.tombstones import remove_tombstone
 
 logger = logging.getLogger("album.editor")
 
 
 @app.route('/api/pages', methods=['GET'])
 def api_list_pages():
-    """List all pages with metadata."""
+    """List all pages with metadata, including cover and backcover."""
     try:
         workspace = Path(current_app.config['WORKSPACE'])
         global_cfg, pages = load_workspace(workspace)
-        
-        # Filter content pages only
+
         content_pages = [p for p in pages if not p.is_cover and not p.is_backcover]
         content_pages.sort(key=lambda p: p.page_number)
-        
+
+        cover_page = next((p for p in pages if p.is_cover), None)
+        backcover_page = next((p for p in pages if p.is_backcover), None)
+
+        def _cover_payload(p):
+            if p is None:
+                return None
+            imgs = p.image_files()
+            return {
+                'id': p.folder.name,
+                'kind': 'cover' if p.is_cover else 'backcover',
+                'image': imgs[0].name if imgs else "",
+                'completed': bool(p.completed),
+            }
+
         return jsonify({
             'success': True,
+            'cover': _cover_payload(cover_page),
+            'backcover': _cover_payload(backcover_page),
             'pages': [{
                 'id': p.folder.name,
                 'number': p.page_number,
@@ -58,6 +77,70 @@ def api_list_pages():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/cover/<kind>', methods=['GET'])
+def api_get_cover(kind):
+    """Detail for the cover (kind='cover') or backcover (kind='backcover')."""
+    if kind not in ('cover', 'backcover'):
+        return jsonify({'success': False, 'error': f'Unknown kind: {kind}'}), 400
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        info = get_cover_info(workspace, kind)
+        if not info:
+            return jsonify({'success': False, 'error': f'{kind} folder not found'}), 404
+        return jsonify({'success': True, 'cover': info})
+    except Exception as e:
+        logger.error(f"Failed to get {kind} info: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/cover/<kind>/photo', methods=['POST'])
+def api_set_cover_photo(kind):
+    """Replace the cover photo with a clone of a workspace page photo.
+
+    Body: {source_page: '<page_folder_name>', source_image: '<img_NNN.jpg>'}.
+    The original photo on the source page is left untouched.
+    """
+    if kind not in ('cover', 'backcover'):
+        return jsonify({'success': False, 'error': f'Unknown kind: {kind}'}), 400
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        data = request.get_json() or {}
+        source_page = data.get('source_page')
+        source_image = data.get('source_image')
+        if not source_page or not source_image:
+            return jsonify({
+                'success': False,
+                'error': 'source_page and source_image required',
+            }), 400
+        result = set_cover_photo(workspace, kind, source_page, source_image)
+        status = 200 if result.get('success') else 400
+        return jsonify(result), status
+    except Exception as e:
+        logger.error(f"Failed to set {kind} photo: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/sections/resort', methods=['POST'])
+def api_resort_sections():
+    """Resort all content pages by section date. Body: {} (no params needed)."""
+    try:
+        workspace = Path(current_app.config['WORKSPACE'])
+        source_root_str = current_app.config.get('SOURCE')
+        source_root = Path(source_root_str) if source_root_str else None
+
+        from src.workspace.resort import resort_sections
+        result = resort_sections(workspace, source_root=source_root)
+
+        if not result['success']:
+            return jsonify(result), 400
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"Failed to resort sections: {e}")
+        return jsonify({'success': False, 'error': str(e), 'renamed_pages': [], 'focus_section_id': None}), 500
+
+
 @app.route('/api/pages/reorder', methods=['POST'])
 def api_reorder_pages():
     """Reorder content pages. Body: {ordered_page_ids: [...]}"""
@@ -65,11 +148,12 @@ def api_reorder_pages():
         workspace = Path(current_app.config['WORKSPACE'])
         data = request.get_json() or {}
         ordered_page_ids = data.get('ordered_page_ids', [])
+        moved_page_id = data.get('moved_page_id')  # optional; may be None
 
         if not ordered_page_ids:
             return jsonify({'success': False, 'error': 'No ordered_page_ids provided'}), 400
 
-        result = reorder_pages(workspace, ordered_page_ids)
+        result = reorder_pages(workspace, ordered_page_ids, moved_page_id=moved_page_id)
 
         if not result['success']:
             return jsonify(result), 400
@@ -212,7 +296,7 @@ def api_restore_workspace_photo():
         if not token:
             return jsonify({'success': False, 'error': 'No trash_token provided'}), 400
 
-        restored = restore_from_trash(workspace, token)
+        restored, payload_meta = restore_from_trash(workspace, token)
 
         # Update photo_count in the page's YAML
         page_folder = restored.parent
@@ -229,6 +313,25 @@ def api_restore_workspace_photo():
                 page_data['photo_captions'] = {}
             with open(config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(page_data, f, allow_unicode=True, default_flow_style=False)
+
+        # If the trashed entry was a photo with a tracked manifest entry,
+        # rebuild that entry and clear the tombstone so sync stops skipping it.
+        if payload_meta.get("kind") == "photo":
+            source_path = payload_meta.get("source_path") or ""
+            if source_path:
+                add_photo_to_manifest(
+                    page_folder,
+                    payload_meta.get("image_name") or restored.name,
+                    source_path=source_path,
+                    source_mtime=float(payload_meta.get("source_mtime") or 0.0),
+                    sha1=str(payload_meta.get("sha1") or ""),
+                    section_id=str(payload_meta.get("section_id") or "") or None,
+                )
+                remove_tombstone(
+                    workspace,
+                    str(payload_meta.get("section_id") or ""),
+                    source_path,
+                )
 
         return jsonify({'success': True, 'restored_path': str(restored.relative_to(workspace))})
 
@@ -460,7 +563,9 @@ def api_get_preview(page_id):
             if not preview_path:
                 return jsonify({'success': False, 'error': 'No preview available'}), 404
         else:
-            preview_path = pdf_files[0]
+            # Pick the most recently modified PDF as a safety net for folders
+            # that still have stale page_<old>.pdf files from prior renumbering.
+            preview_path = max(pdf_files, key=lambda p: p.stat().st_mtime)
         
         return send_file(
             preview_path,

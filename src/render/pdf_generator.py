@@ -329,15 +329,45 @@ def _render_content_page(
         draw_photo_border(c, draw_x, draw_y, photo.w, photo.h, BORDER_PX)
 
         try:
-            reader = _optimized_image_reader(photo.path, photo.w, photo.h)
-            c.drawImage(
-                reader,
-                draw_x,
-                draw_y,
-                width=photo.w,
-                height=photo.h,
-                preserveAspectRatio=True,
-            )
+            if photo.fit_mode == "cover":
+                # Crop-to-fill: scale the image so it OVERFLOWS the rectangle on
+                # one axis, then clip to the rectangle. The "cover" semantics
+                # match CSS `object-fit: cover`.
+                native_ar = _native_aspect_ratio(photo.path)
+                target_ar = photo.w / photo.h if photo.h > 0 else native_ar
+                if native_ar > target_ar:
+                    # Photo wider than the target slot → fill height, overflow width.
+                    scaled_h = photo.h
+                    scaled_w = photo.h * native_ar
+                else:
+                    # Photo taller (or equal) → fill width, overflow height.
+                    scaled_w = photo.w
+                    scaled_h = photo.w / native_ar
+                offset_x = (photo.w - scaled_w) / 2
+                offset_y = (photo.h - scaled_h) / 2
+
+                reader = _optimized_image_reader(photo.path, scaled_w, scaled_h)
+                clip_path = c.beginPath()
+                clip_path.rect(draw_x, draw_y, photo.w, photo.h)
+                c.clipPath(clip_path, stroke=0, fill=0)
+                c.drawImage(
+                    reader,
+                    draw_x + offset_x,
+                    draw_y + offset_y,
+                    width=scaled_w,
+                    height=scaled_h,
+                    preserveAspectRatio=False,
+                )
+            else:
+                reader = _optimized_image_reader(photo.path, photo.w, photo.h)
+                c.drawImage(
+                    reader,
+                    draw_x,
+                    draw_y,
+                    width=photo.w,
+                    height=photo.h,
+                    preserveAspectRatio=True,
+                )
         except Exception:
             c.setFillColor(Color(0.8, 0.2, 0.2))
             c.rect(draw_x, draw_y, photo.w, photo.h, fill=1, stroke=0)
@@ -475,6 +505,18 @@ def _draw_section_titles(
         c.drawString(x_sec, y_sec, secondary_title)
 
     c.restoreState()
+
+
+def _native_aspect_ratio(path: Path) -> float:
+    """Return the photo's native width / height. Falls back to 1.33 on error."""
+    try:
+        with Image.open(path) as img:
+            w, h = img.size
+        if w > 0 and h > 0:
+            return w / h
+    except Exception:
+        pass
+    return 1.33
 
 
 def _optimized_image_reader(path: Path, display_w: float, display_h: float) -> ImageReader:

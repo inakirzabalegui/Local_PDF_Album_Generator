@@ -45,6 +45,19 @@ def extract_date_from_folder(name: str) -> str | None:
     return None
 
 
+def section_date_sort_key(folder_name: str) -> tuple[int, int, int] | None:
+    """Return (YYYY, MM, DD) tuple from a YYYYMMDD prefix, or None.
+
+    Examples:
+        '20260109_Comida_Despedida_Js' -> (2026, 1, 9)
+        'Vacaciones_Verano' -> None
+    """
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})_?", folder_name)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return None
+
+
 def build_section_title(folder_name: str) -> str:
     """Build complete section title with date and name.
     

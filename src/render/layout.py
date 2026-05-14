@@ -42,6 +42,35 @@ LAYOUT_CONFIGS = {
         "jitter_factor": 0.01,
         "fill_factor": 0.97,  # Increased from 0.95 to pack photos more densely
     },
+    "cuadricula_uniforme": {
+        # Strict N×M grid. Cells fill the full usable area; photos letterboxed
+        # inside cells (AR preserved). Inner-cell whitespace is possible when
+        # cell AR differs from photo AR. Ignores per-photo weights.
+        "rotation_range": 0.0,
+        "jitter_factor": 0.0,
+        "fill_factor": 0.98,
+        "grid_fit": "contain",
+    },
+    "cuadricula_compacta": {
+        # Same letterbox semantics, but cells are sized to the photo's native AR
+        # so there is no whitespace INSIDE the cells. The grid as a whole is
+        # smaller than the usable area and centered on the page. Photos end up
+        # the same size as `cuadricula_uniforme` but visually packed tight.
+        "rotation_range": 0.0,
+        "jitter_factor": 0.0,
+        "fill_factor": 1.0,
+        "grid_fit": "compact",
+    },
+    "cuadricula_maximizada": {
+        # Cells fill the full usable area and photos are scaled to FILL each
+        # cell (crop-to-cover): photo content may be clipped at the edges, but
+        # photos are visually maximal. Best when you want every pixel of page
+        # used. Ignores per-photo weights.
+        "rotation_range": 0.0,
+        "jitter_factor": 0.0,
+        "fill_factor": 1.0,
+        "grid_fit": "cover",
+    },
 }
 
 
@@ -57,6 +86,10 @@ class PlacedPhoto:
     rotation: float
     z_index: int
     source_group: str = ""
+    # How the renderer should fit the image into the (w, h) rectangle:
+    #   "contain" (default): preserve AR, letterbox inside the rectangle
+    #   "cover": scale to fill the rectangle, cropping the overflow
+    fit_mode: str = "contain"
 
 
 def _try_mosaic_layout(
@@ -67,91 +100,117 @@ def _try_mosaic_layout(
     gap: float,
     fill_factor: float,
     weights: list[float],
-) -> list[tuple[list[float], float]] | None:
-    """Try mosaic/guillotine layout when weighted photos are present.
-    
-    Picks the heaviest photo as hero, allocates proportional area, 
-    then recursively packs remaining photos.
-    
-    Returns layout data if score > 0.75, else None (fall back to row/column).
+) -> dict | None:
+    """Try mosaic layout when a weighted hero photo is present.
+
+    Places the hero in a reserved column on the LEFT of the usable area
+    and packs the remaining photos as justified rows inside the right
+    sub-rectangle (reuses `_justified_rows`).
+
+    Returns a dict with explicit per-photo rects in the *usable* frame
+    so the caller can place each photo using its real index in
+    ``image_paths`` (avoids the old positional-slicing bug where the
+    hero ended up at the wrong photo when filenames weren't sorted by
+    weight).
+
+    Shape::
+
+        {
+            "kind": "mosaic",
+            "hero":      {"index": int, "rect": (x, y, w, h)},
+            "remaining": [{"index": int, "rect": (x, y, w, h)}, ...],
+        }
+
+    Returns ``None`` if no weighted photo qualifies as hero, if there is
+    no room left for the remaining photos, or if the remaining packing
+    would overflow the right sub-rectangle.
     """
     n = len(image_paths)
     if n < 2:
         return None
-    
-    # Find hero (highest weight)
+
     max_weight_idx = max(range(n), key=lambda i: weights[i])
     hero_weight = weights[max_weight_idx]
-    
-    # If no real hero (all weights ~1.0), skip mosaic
     if hero_weight <= 1.1:
         return None
-    
+
     hero_ar = aspect_ratios[max_weight_idx]
-    
-    # Allocate hero area proportional to its weight share
     total_weight = sum(weights)
-    hero_area_fraction = hero_weight / total_weight
-    hero_area_fraction = max(0.20, min(0.40, hero_area_fraction))
-    
-    # Hero takes a rectangular region (left side, tall)
-    hero_h = usable_h
-    hero_w = min(usable_w * 0.5, (hero_h * hero_ar) * (hero_area_fraction / (hero_area_fraction / hero_ar)))
-    hero_w = max(usable_w * 0.25, hero_w)
-    
-    # Remaining space to the right
+    hero_area_fraction = max(0.20, min(0.40, hero_weight / total_weight))
+
+    # Reserved column width for the hero on the LEFT of the usable area.
+    hero_w = max(usable_w * 0.30, min(usable_w * 0.55, usable_w * hero_area_fraction))
+    if hero_ar < 1.0:
+        # Portrait hero — don't reserve more width than the photo can fill at full height.
+        hero_w = min(hero_w, usable_h * hero_ar)
+
     remaining_w = usable_w - hero_w - gap
     remaining_h = usable_h
-    
-    if remaining_w < 100:  # Too little space left, bail
+    if remaining_w < 100:
         return None
-    
-    # Pack remaining photos into remaining_w x remaining_h
+
+    # Hero photo's actual rect inside its reserved column (AR-preserved, centered).
+    hero_natural_h = hero_w / hero_ar
+    if hero_natural_h <= usable_h:
+        hero_photo_w = hero_w
+        hero_photo_h = hero_natural_h
+    else:
+        hero_photo_h = usable_h
+        hero_photo_w = usable_h * hero_ar
+    hero_x = (hero_w - hero_photo_w) / 2
+    hero_y = (usable_h - hero_photo_h) / 2
+
     remaining_indices = [i for i in range(n) if i != max_weight_idx]
     remaining_ars = [aspect_ratios[i] for i in remaining_indices]
     remaining_weights = [weights[i] for i in remaining_indices]
-    
-    effective_ars = [ar * w for ar, w in zip(remaining_ars, remaining_weights)]
-    
-    # Try row-major packing in the remaining space
-    best_layout = None
-    best_score = -1.0
-    
-    max_rows = min(len(remaining_indices), 4)
-    for num_rows in range(1, max_rows + 1):
-        for partition_indices in _all_partitions(len(remaining_indices), num_rows):
-            row_data = []
-            for start, end in partition_indices:
-                row_eff_ars = effective_ars[start:end]
-                row_h = (remaining_w - gap * (len(row_eff_ars) - 1)) / sum(row_eff_ars)
-                row_data.append((row_eff_ars, row_h))
-            
-            total_h = sum(h for _, h in row_data) + gap * (num_rows - 1)
-            
-            # Score the remaining space
-            v_fill = min(total_h, remaining_h) / remaining_h
-            if v_fill < 0.75:
-                v_score = v_fill ** 2
-            else:
-                v_score = 1.0 if total_h <= remaining_h else (remaining_h / total_h) ** 0.5
-            
-            if total_h > remaining_h:
-                overflow_penalty = (remaining_h / total_h) ** 1.5
-            else:
-                overflow_penalty = 1.0
-            
-            score = v_score * overflow_penalty
-            
-            if score > best_score:
-                best_score = score
-                best_layout = row_data
-    
-    if best_layout and best_score > 0.60:
-        # Return combined layout: hero + remaining rows
-        # For simplicity, prepend hero as its own "row" with special width
-        return [(aspect_ratios[max_weight_idx:max_weight_idx+1], hero_w)] + best_layout
-    
-    return None
+
+    row_layout = _justified_rows(
+        remaining_ars, remaining_w, remaining_h, gap, fill_factor, remaining_weights
+    )
+    if not row_layout:
+        return None
+
+    total_rows_h = sum(h for _, h in row_layout) + gap * (len(row_layout) - 1)
+    if total_rows_h > remaining_h + 0.5:
+        # _justified_rows should have scaled to fit, but bail if it didn't.
+        return None
+
+    remaining_x_offset = hero_w + gap
+    row_y_offset = max(0.0, (remaining_h - total_rows_h) / 2)
+    remaining_entries: list[dict] = []
+    rem_idx = 0
+    current_y = row_y_offset
+    for row_eff_ars, row_h in row_layout:
+        row_count = len(row_eff_ars)
+        row_real_ars = remaining_ars[rem_idx : rem_idx + row_count]
+        actual_row_w = sum(ar * row_h for ar in row_real_ars) + gap * (row_count - 1)
+        x_offset_row = max(0.0, (remaining_w - actual_row_w) / 2)
+        current_x = remaining_x_offset + x_offset_row
+        for k, real_ar in enumerate(row_real_ars):
+            photo_w = real_ar * row_h
+            photo_h = row_h
+            remaining_entries.append({
+                "index": remaining_indices[rem_idx + k],
+                "rect": (current_x, current_y, photo_w, photo_h),
+            })
+            current_x += photo_w + gap
+        rem_idx += row_count
+        current_y += row_h + gap
+
+    logger.debug(
+        f"    Mosaic: hero idx={max_weight_idx} rect=({hero_x:.1f},{hero_y:.1f},"
+        f"{hero_photo_w:.1f},{hero_photo_h:.1f}); "
+        f"{len(remaining_entries)} remaining photos in {len(row_layout)} rows"
+    )
+
+    return {
+        "kind": "mosaic",
+        "hero": {
+            "index": max_weight_idx,
+            "rect": (hero_x, hero_y, hero_photo_w, hero_photo_h),
+        },
+        "remaining": remaining_entries,
+    }
 
 
 def _try_column_major_layout(
@@ -270,6 +329,16 @@ def compute_layout(
     # Read actual aspect ratios
     aspect_ratios = [_get_aspect_ratio(p) for p in image_paths]
 
+    # Uniform-grid family: identical cells, weights ignored, picks the best
+    # (rows × cols) divisor pair by total photo area. The "grid_fit" key in
+    # the config switches between letterbox-with-large-cells (contain),
+    # letterbox-with-photo-shaped-cells (compact), and crop-to-fill (cover).
+    if config.get("grid_fit"):
+        return _compute_uniform_grid_layout(
+            image_paths, aspect_ratios, usable_w, usable_h,
+            margin_left, effective_margin_top, config, rng,
+        )
+
     # Packer selection with fallback chain
     rows_or_cols = None
     is_column_major = False
@@ -309,7 +378,11 @@ def compute_layout(
             )
 
     # Calculate total size and center
-    if is_column_major or is_mosaic:
+    if is_mosaic:
+        # Mosaic rects already carry absolute positions inside the usable frame.
+        x_offset = 0
+        y_offset = 0
+    elif is_column_major:
         total_w = sum(w for _, w in rows_or_cols) + BASE_GAP * (len(rows_or_cols) - 1)
         x_offset = max(0, (usable_w - total_w) / 2)
         y_offset = 0
@@ -322,8 +395,59 @@ def compute_layout(
     placed: list[PlacedPhoto] = []
     photo_idx = 0
 
-    if is_column_major or is_mosaic:
-        # Column-major or mosaic placement
+    if is_mosaic:
+        # Mosaic placement: hero first, then remaining; each photo placed
+        # using the precomputed rect and the *original* photo index so the
+        # right image lands in each region (the old code assumed photos
+        # were sorted by weight, which they aren't).
+        entries = [rows_or_cols["hero"]] + rows_or_cols["remaining"]
+        for placement_idx, entry in enumerate(entries):
+            orig_idx = entry["index"]
+            rect_x, rect_y, rect_w, rect_h = entry["rect"]
+            photo_path = image_paths[orig_idx]
+
+            photo_w = rect_w
+            photo_h = rect_h
+
+            rotation = rng.uniform(-config["rotation_range"], config["rotation_range"])
+            if abs(rotation) > 0.1:
+                rad = abs(rotation) * math.pi / 180
+                reduction = 1.0 / (math.cos(rad) + (photo_h / photo_w) * math.sin(rad))
+                reduction = min(reduction, 0.95)
+                photo_w *= reduction
+                photo_h *= reduction
+
+            max_jitter = BASE_GAP * config["jitter_factor"] * 0.5
+            jitter_x = rng.uniform(-max_jitter, max_jitter)
+            jitter_y = rng.uniform(-max_jitter, max_jitter)
+
+            # Re-center the (possibly shrunk-by-rotation) photo inside its rect
+            # so rotation doesn't make it cross into a neighbour's rect.
+            center_offset_x = (rect_w - photo_w) / 2
+            center_offset_y = (rect_h - photo_h) / 2
+
+            x = margin_left + rect_x + center_offset_x + jitter_x
+            y = effective_margin_top + rect_y + center_offset_y + jitter_y
+
+            safety_margin = 2
+            x = max(margin_left + safety_margin, min(x, page_w - margin_right - photo_w - safety_margin))
+            y = max(effective_margin_top + safety_margin, min(y, page_h - margin_bottom - photo_h - safety_margin))
+
+            z = _interleaved_z(placement_idx, n, rng)
+
+            placed.append(
+                PlacedPhoto(
+                    path=photo_path,
+                    x=x,
+                    y=y,
+                    w=photo_w,
+                    h=photo_h,
+                    rotation=rotation,
+                    z_index=z,
+                )
+            )
+    elif is_column_major:
+        # Column-major placement
         current_x = margin_left + x_offset
         for col_eff_ars, col_w in rows_or_cols:
             col_real_ars = aspect_ratios[photo_idx : photo_idx + len(col_eff_ars)]
@@ -352,9 +476,9 @@ def compute_layout(
                 safety_margin = 2
                 x = max(margin_left + safety_margin, min(x, page_w - margin_right - photo_w - safety_margin))
                 y = max(effective_margin_top + safety_margin, min(y, page_h - margin_bottom - photo_h - safety_margin))
-                
+
                 z = _interleaved_z(photo_idx, n, rng)
-                
+
                 placed.append(
                     PlacedPhoto(
                         path=photo_path,
@@ -366,10 +490,10 @@ def compute_layout(
                         z_index=z,
                     )
                 )
-                
+
                 current_y += col_w / real_ar + BASE_GAP
                 photo_idx += 1
-            
+
             current_x += col_w + BASE_GAP
     else:
         # Row-major placement
@@ -425,7 +549,150 @@ def compute_layout(
 
             current_y += row_h + BASE_GAP
 
+    _resolve_overlaps(placed)
     placed.sort(key=lambda p: p.z_index)
+    return placed
+
+
+def _pick_uniform_grid_dimensions(
+    n: int,
+    aspect_ratios: list[float],
+    usable_w: float,
+    usable_h: float,
+    gap: float,
+) -> tuple[int, int]:
+    """Pick (rows, cols) maximizing total photo area for N photos.
+
+    Enumerates every (rows, cols) with rows * cols == n, simulates placing
+    each photo letterboxed inside its cell, and selects the configuration
+    with the largest total photo area. Ties are broken by preferring the
+    shape closest to square (smallest |rows - cols|).
+
+    For prime n the only candidates are 1×n and n×1; the function still
+    picks the better of the two.
+    """
+    candidates: list[tuple[int, int]] = []
+    for rows in range(1, n + 1):
+        if n % rows == 0:
+            candidates.append((rows, n // rows))
+
+    best: tuple[int, int] = (1, n)
+    best_score = -1.0
+    for rows, cols in candidates:
+        if cols * gap >= usable_w or rows * gap >= usable_h:
+            continue
+        cell_w = (usable_w - (cols - 1) * gap) / cols
+        cell_h = (usable_h - (rows - 1) * gap) / rows
+        if cell_w <= 0 or cell_h <= 0:
+            continue
+        total_area = 0.0
+        for ar in aspect_ratios:
+            photo_w = cell_w
+            photo_h = cell_w / ar
+            if photo_h > cell_h:
+                photo_h = cell_h
+                photo_w = cell_h * ar
+            total_area += photo_w * photo_h
+        # Tiebreaker: prefer the shape closest to square so 6 → 3×2 wins over 6×1 ties.
+        score = (total_area, -abs(rows - cols))
+        if score > (best_score, 0):
+            best_score = total_area
+            best = (rows, cols)
+    return best
+
+
+def _compute_uniform_grid_layout(
+    image_paths: list[Path],
+    aspect_ratios: list[float],
+    usable_w: float,
+    usable_h: float,
+    margin_left: float,
+    margin_top: float,
+    config: dict,
+    rng: random.Random,
+) -> list[PlacedPhoto]:
+    """Strict N×M grid with uniform cell sizes.
+
+    `config["grid_fit"]` selects the visual strategy:
+
+    - ``"contain"`` (cuadricula_uniforme): cells fill the usable area; photos
+      letterboxed inside cells. Inner-cell whitespace can be significant when
+      the cell AR is far from the photo AR.
+    - ``"compact"`` (cuadricula_compacta): cells are sized to match the photo
+      AR exactly. Photos fill their cells with no inner whitespace and the
+      grid as a whole is centered on the page (whitespace moves outside).
+    - ``"cover"`` (cuadricula_maximizada): cells fill the usable area; photos
+      are scaled to fill cells with crop. The renderer clips the overflow.
+    """
+    n = len(image_paths)
+    rows, cols = _pick_uniform_grid_dimensions(n, aspect_ratios, usable_w, usable_h, BASE_GAP)
+
+    fit_mode = config.get("grid_fit", "contain")
+    fill_factor = config.get("fill_factor", 0.97)
+
+    # Cell dimensions before any compact shrinking.
+    base_grid_w = usable_w * fill_factor
+    base_grid_h = usable_h * fill_factor
+    cell_w = (base_grid_w - (cols - 1) * BASE_GAP) / cols
+    cell_h = (base_grid_h - (rows - 1) * BASE_GAP) / rows
+
+    if fit_mode == "compact":
+        # Shrink each cell so its AR matches the photo AR — eliminates the
+        # inner-cell whitespace. We use the average photo AR (most albums
+        # are visually uniform; mixed AR pages letterbox the outliers).
+        avg_ar = sum(aspect_ratios) / len(aspect_ratios)
+        # Try fitting cells with AR = avg_ar inside the cell rectangle.
+        target_cell_w = cell_w
+        target_cell_h = cell_w / avg_ar
+        if target_cell_h > cell_h:
+            target_cell_h = cell_h
+            target_cell_w = cell_h * avg_ar
+        cell_w, cell_h = target_cell_w, target_cell_h
+
+    grid_w = cols * cell_w + (cols - 1) * BASE_GAP
+    grid_h = rows * cell_h + (rows - 1) * BASE_GAP
+    x_offset = (usable_w - grid_w) / 2
+    y_offset = (usable_h - grid_h) / 2
+
+    placed: list[PlacedPhoto] = []
+    for i, (photo_path, ar) in enumerate(zip(image_paths, aspect_ratios)):
+        row = i // cols
+        col = i % cols
+
+        cell_x = margin_left + x_offset + col * (cell_w + BASE_GAP)
+        cell_y = margin_top + y_offset + row * (cell_h + BASE_GAP)
+
+        if fit_mode == "cover":
+            # Photo occupies the full cell; the renderer crops via clip.
+            photo_w = cell_w
+            photo_h = cell_h
+            x, y = cell_x, cell_y
+            placed_fit = "cover"
+        else:
+            # Letterbox inside the cell, AR preserved.
+            photo_w = cell_w
+            photo_h = cell_w / ar
+            if photo_h > cell_h:
+                photo_h = cell_h
+                photo_w = cell_h * ar
+            x = cell_x + (cell_w - photo_w) / 2
+            y = cell_y + (cell_h - photo_h) / 2
+            placed_fit = "contain"
+
+        placed.append(
+            PlacedPhoto(
+                path=photo_path,
+                x=x,
+                y=y,
+                w=photo_w,
+                h=photo_h,
+                rotation=0.0,
+                z_index=i,
+                fit_mode=placed_fit,
+            )
+        )
+
+    logger.debug(f"    Uniform grid {rows}x{cols} for {n} photos (fit={fit_mode})")
     return placed
 
 
@@ -703,3 +970,38 @@ def _interleaved_z(index: int, total: int, rng: random.Random) -> int:
     """Generate a z-index that creates a natural stacking order."""
     base = index * 2
     return base + rng.randint(0, 1)
+
+
+def _resolve_overlaps(placed: list[PlacedPhoto], min_gap: float = BASE_GAP / 2) -> None:
+    """Last-line safety net: shrink overlapping photos in place.
+
+    The layout branches are responsible for producing non-overlapping
+    placements. This helper only acts when something slipped through
+    (e.g. a clamp pushed a photo into a neighbour) and it logs a
+    warning so regressions surface immediately. Only shrinks around the
+    photo centre — never repositions, to avoid masking real bugs.
+    """
+    if len(placed) < 2:
+        return
+    for _ in range(3):
+        adjusted = False
+        for i in range(len(placed)):
+            for j in range(i + 1, len(placed)):
+                a, b = placed[i], placed[j]
+                overlap_x = min(a.x + a.w, b.x + b.w) - max(a.x, b.x)
+                overlap_y = min(a.y + a.h, b.y + b.h) - max(a.y, b.y)
+                if overlap_x > min_gap and overlap_y > min_gap:
+                    logger.warning(
+                        f"    Overlap: {a.path.name} vs {b.path.name} "
+                        f"({overlap_x:.1f}pt x {overlap_y:.1f}pt) — shrinking"
+                    )
+                    for photo in (a, b):
+                        cx = photo.x + photo.w / 2
+                        cy = photo.y + photo.h / 2
+                        photo.w *= 0.93
+                        photo.h *= 0.93
+                        photo.x = cx - photo.w / 2
+                        photo.y = cy - photo.h / 2
+                    adjusted = True
+        if not adjusted:
+            return

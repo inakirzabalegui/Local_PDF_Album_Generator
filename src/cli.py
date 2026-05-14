@@ -18,6 +18,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
+        "--resort-sections",
+        dest="resort_sections",
+        metavar="DIRECTORIO_PROYECTO",
+        type=Path,
+        help=(
+            "Reordena las secciones del workspace por fecha de carpeta (prefijo YYYYMMDD_). "
+            "Solo cambia page_number y nombre de carpeta; conserva títulos, fotos y ediciones."
+        ),
+    )
+    group.add_argument(
         "--app",
         action="store_true",
         help=(
@@ -53,6 +63,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    parser.add_argument(
+        "--source",
+        metavar="DIRECTORIO_FOTOS",
+        type=Path,
+        default=None,
+        help=(
+            "Carpeta de fotos originales (source root). "
+            "Usado por --resort-sections para leer EXIF de fotos originales cuando la "
+            "carpeta no tiene prefijo YYYYMMDD_."
+        ),
+    )
     parser.add_argument(
         "--from",
         dest="page_from",
@@ -95,7 +116,13 @@ def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.app:
+    if args.resort_sections:
+        if args.page_from is not None or args.page_to is not None or args.page is not None:
+            print("Error: --from, --to y --page solo son válidos con --render.", file=sys.stderr)
+            sys.exit(1)
+        source_root = args.source.resolve() if args.source else None
+        _run_resort_sections(args.resort_sections.resolve(), source_root=source_root)
+    elif args.app:
         if args.page_from is not None or args.page_to is not None or args.page is not None:
             print("Error: --from, --to y --page solo son válidos con --render.", file=sys.stderr)
             sys.exit(1)
@@ -347,6 +374,42 @@ def _run_edit(project_dir: Path) -> None:
     from src.editor.app import launch_editor
 
     launch_editor(project_dir)
+
+
+def _run_resort_sections(workspace_dir: Path, source_root: Path | None = None) -> None:
+    """Resort workspace content pages by section date."""
+    if not workspace_dir.is_dir():
+        print(f"Error: '{workspace_dir}' no es un directorio válido.", file=sys.stderr)
+        sys.exit(1)
+
+    global_yaml = workspace_dir / "global_config.yaml"
+    if not global_yaml.exists():
+        print(
+            f"Error: no se encontró 'global_config.yaml' en '{workspace_dir}'.",
+            file=sys.stderr,
+        )
+        print("Este no es un workspace válido. Ejecuta --init primero.", file=sys.stderr)
+        sys.exit(1)
+
+    from src.workspace.resort import resort_sections
+
+    print(f"Reordenando secciones en '{workspace_dir}' …")
+    result = resort_sections(workspace_dir, source_root=source_root)
+
+    if result["success"]:
+        renamed = result.get("renamed_pages", [])
+        if renamed:
+            print(f"Renombradas {len(renamed)} carpeta(s):")
+            for r in renamed:
+                print(f"  {r['old_id']} → {r['new_id']}")
+        else:
+            print("Las secciones ya estaban en el orden correcto. No hubo cambios.")
+        focus = result.get("focus_section_id")
+        if focus:
+            print(f"Primera sección: {focus}")
+    else:
+        print(f"Error al reordenar secciones: {result.get('error')}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _run_app() -> None:

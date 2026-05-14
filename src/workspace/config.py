@@ -162,6 +162,10 @@ section_id: {section_id}
 # El syncer reconstruye section_titles[1] a partir de estos IDs en cada sync.
 # (NO editar — gestionado por el pipeline)
 sub_group_ids: {sub_group_ids}
+
+# Fecha de sección en formato DD/MM/YYYY (derivada del prefijo YYYYMMDD_ de la carpeta fuente).
+# Usada para reordenar secciones con --resort-sections. Vacío si no hay prefijo de fecha.
+section_date: '{section_date}'
 """
 
 # ── Data models ──────────────────────────────────────────────────────────────
@@ -273,6 +277,7 @@ class PageConfig:
     completed: bool = False
     section_id: str = ""
     sub_group_ids: list[str] = field(default_factory=list)
+    section_date: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -290,6 +295,7 @@ class PageConfig:
             "completed": self.completed,
             "section_id": self.section_id,
             "sub_group_ids": list(self.sub_group_ids),
+            "section_date": self.section_date,
         }
 
     def image_files(self) -> list[Path]:
@@ -412,6 +418,7 @@ def write_page_configs(page_map: list[PageConfig]) -> None:
             completed=str(pc.completed).lower(),
             section_id=section_id_str,
             sub_group_ids=sub_group_ids_str,
+            section_date=pc.section_date or "",
         )
 
         with open(path, "w", encoding="utf-8") as f:
@@ -553,6 +560,7 @@ def read_page_configs(workspace: Path, global_cfg: GlobalConfig) -> list[PageCon
                 completed=data.get("completed", False),
                 section_id=data.get("section_id", "") or "",
                 sub_group_ids=list(data.get("sub_group_ids", []) or []),
+                section_date=str(data.get("section_date", "") or ""),
             )
         )
 

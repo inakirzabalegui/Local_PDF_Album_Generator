@@ -95,6 +95,7 @@
                     <button id="open-folder-btn" class="btn btn-secondary" onclick="openAnotherFolder()" data-i18n="header.open_folder">📁 Abrir carpeta</button>
                     <button id="printing-config-btn" class="btn btn-secondary" onclick="openPrintingDialog()" title="Configuración de impresión">🖨️ Impresión</button>
                     <button id="sync-album-header-btn" class="btn btn-secondary" title="Aplica cambios del source preservando ediciones">🔄 Sincronizar</button>
+                    <button id="resort-sections-btn" class="btn btn-secondary" title="Reordena secciones por fecha de carpeta">🔧 Reordenar secciones</button>
                     <button id="reset-album-header-btn" class="btn btn-secondary" title="Reconstruye el álbum desde cero (pierde ediciones)">⚠️ Reset álbum</button>
                     <button id="render-album-header-btn" class="btn btn-primary" title="Generar PDFs interior + cover">🖨️ Generar PDF</button>
                     <button id="help-btn" class="btn btn-secondary" onclick="openHelp()" data-i18n-title="header.help_title" title="Ayuda">?</button>
@@ -189,7 +190,9 @@
                     <div class="action-bar" id="album-action-bar">
                         <button id="layout-mode-btn" class="btn btn-secondary">🎨 Modo Layout</button>
                         <button id="shuffle-layout-btn" class="btn btn-secondary" title="Reordenar aleatoriamente las fotos (tecla S)">🎲 Aleatorio</button>
+                        <button id="grid-equalize-btn" class="btn btn-secondary" title="Distribuir las fotos en una cuadrícula uniforme (todas del mismo tamaño)">📐 Igualar en cuadrícula</button>
                         <button id="explode-page-btn" class="btn btn-secondary">💥 Explotar Página en Dos</button>
+                        <button id="move-page-btn" class="btn btn-secondary" title="Mover esta página a otra posición">↕️ Mover a página</button>
                         <button id="delete-page-btn" class="btn btn-danger">🗑️ Borrar Página</button>
                         <div style="flex:1"></div>
                         <button id="toggle-page-completed-btn" class="btn btn-secondary" title="Marcar página como completada (tecla C)">✅ Completado</button>
@@ -219,12 +222,49 @@
                                     data-i18n-title="image.page_preview"
                                     title="Vista previa de página"
                                 ></canvas>
+                                <div id="cover-detail-view" class="cover-detail-view hidden">
+                                    <div class="cover-detail-card">
+                                        <span class="cover-detail-chip" id="cover-detail-chip">Portada</span>
+                                        <div class="cover-detail-image-wrap">
+                                            <img id="cover-detail-image" alt="" />
+                                        </div>
+                                        <div class="cover-detail-actions">
+                                            <button id="cover-pick-btn" class="btn btn-primary">Elegir foto</button>
+                                        </div>
+                                        <p class="cover-detail-hint">
+                                            La foto se duplica en la portada. La original sigue en su página.
+                                        </p>
+                                    </div>
+                                </div>
                             </div>
                             <div id="loading-overlay" class="loading-overlay" style="display: none;">
                                 <div class="loading-spinner"></div>
                                 <p data-i18n="loading.preview">Generando vista previa...</p>
                             </div>
                         </main>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cover Picker Modal -->
+            <div id="cover-picker-modal" class="modal hidden" onclick="handleCoverPickerOverlayClick(event)">
+                <div class="modal-content cover-picker-modal-content">
+                    <header class="cover-picker-header">
+                        <h3 id="cover-picker-title">Elegir foto de portada</h3>
+                        <button class="cover-picker-close" onclick="closeCoverPicker()" aria-label="Cerrar">✕</button>
+                    </header>
+                    <div class="cover-picker-filter">
+                        <input
+                            type="text"
+                            id="cover-picker-filter-input"
+                            class="cover-picker-filter-input"
+                            placeholder="Filtrar por nombre o fecha (ej. amalfitana, 2026, 01/06)"
+                            autocomplete="off"
+                            spellcheck="false"
+                        />
+                    </div>
+                    <div class="cover-picker-body" id="cover-picker-body">
+                        <p class="cover-picker-loading">Cargando fotos…</p>
                     </div>
                 </div>
             </div>
@@ -237,6 +277,9 @@
                         <option value="mesa_de_luz">Mesa de Luz</option>
                         <option value="grid_compacto">Grid Compacto</option>
                         <option value="hibrido">Híbrido</option>
+                        <option value="cuadricula_uniforme">Cuadrícula uniforme (preserva todo, cells grandes)</option>
+                        <option value="cuadricula_compacta">Cuadrícula compacta (preserva todo, cells ajustadas)</option>
+                        <option value="cuadricula_maximizada">Cuadrícula maximizada (recorta, fotos grandes)</option>
                     </select>
                     <div class="modal-actions">
                         <button id="apply-layout-mode-btn" class="btn btn-primary">Aplicar</button>
@@ -424,6 +467,8 @@
     <!-- Hidden data from server -->
     <script>
         const PAGES_DATA = {{ pages|tojson }};
+        const COVER_DATA = {{ cover|tojson }};
+        const BACKCOVER_DATA = {{ backcover|tojson }};
         const ALBUM_TITLE = "{{ album_title }}";
         const TOTAL_PAGES = {{ total_pages }};
         const HAS_PAGES = {{ has_pages | tojson }};

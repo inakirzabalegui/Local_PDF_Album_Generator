@@ -42,6 +42,8 @@ let _currentRenderTask = null;
 const PREVIEW_RENDER_MAX_RETRIES = 60;       // ~1s at 60 fps
 const PREVIEW_MIN_CONTAINER_PX = 100;        // anything below this is "not laid out yet"
 
+let _albumInitDone = false;
+
 // Initialize album mode when tab is active
 function initAlbumMode() {
     log('INFO', 'ALBUM_MODE_INIT', { totalPages: PAGES_DATA.length });
@@ -49,7 +51,15 @@ function initAlbumMode() {
     initPagePanel();
 
     if (PAGES_DATA.length > 0) {
-        loadPage(0);
+        let targetIndex;
+        if (!_albumInitDone) {
+            const firstIncomplete = PAGES_DATA.findIndex(p => p.completed === false);
+            targetIndex = firstIncomplete >= 0 ? firstIncomplete : 0;
+            _albumInitDone = true;
+        } else {
+            targetIndex = Math.max(0, Math.min(PAGES_DATA.length - 1, currentPageIndex));
+        }
+        loadPage(targetIndex);
     }
 
     setupAlbumEventListeners();
@@ -175,6 +185,7 @@ function setupAlbumEventListeners() {
     // Actions
     document.getElementById('exit-btn')?.addEventListener('click', exitEditor);
     document.getElementById('explode-page-btn')?.addEventListener('click', explodePage);
+    document.getElementById('move-page-btn')?.addEventListener('click', openMovePageDialog);
     document.getElementById('delete-photo-btn')?.addEventListener('click', deleteSelectedPhoto);
     document.getElementById('delete-page-btn')?.addEventListener('click', deletePage);
     document.getElementById('update-caption-btn')?.addEventListener('click', updatePhotoCaption);
@@ -182,6 +193,7 @@ function setupAlbumEventListeners() {
     document.getElementById('apply-layout-mode-btn')?.addEventListener('click', applyLayoutModeFromModal);
     document.getElementById('cancel-layout-mode-btn')?.addEventListener('click', closeLayoutModeModal);
     document.getElementById('shuffle-layout-btn')?.addEventListener('click', shuffleLayout);
+    document.getElementById('grid-equalize-btn')?.addEventListener('click', () => updateLayoutMode('cuadricula_uniforme'));
     document.getElementById('toggle-page-completed-btn')?.addEventListener('click', togglePageCompleted);
 
     // Keyboard shortcuts
@@ -245,14 +257,22 @@ function handleAlbumKeyboard(e) {
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
             if (pagePanelFocused && pagePanelOpen) {
-                navigatePagePanelSelection(-1);
+                if (e.ctrlKey || e.metaKey) {
+                    navigatePagePanelToNextStateChange(-1);
+                } else {
+                    navigatePagePanelSelection(-1);
+                }
             } else {
                 navigatePhotoSelection(-1);
             }
         } else if (e.key === 'ArrowDown') {
             e.preventDefault();
             if (pagePanelFocused && pagePanelOpen) {
-                navigatePagePanelSelection(1);
+                if (e.ctrlKey || e.metaKey) {
+                    navigatePagePanelToNextStateChange(1);
+                } else {
+                    navigatePagePanelSelection(1);
+                }
             } else {
                 navigatePhotoSelection(1);
             }
@@ -1004,6 +1024,32 @@ function updateCompletedButton(btnEl, completed) {
 }
 
 async function togglePageCompleted() {
+    // Cover/backcover detail view
+    if (currentCoverKind) {
+        const target = currentCoverKind === 'cover' ? COVER_DATA : BACKCOVER_DATA;
+        if (!target) return;
+        const newCompleted = !target.completed;
+        try {
+            const response = await fetch(`/api/page/${encodeURIComponent(target.id)}/completed`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ completed: newCompleted }),
+            });
+            const data = await response.json();
+            if (data.success) {
+                target.completed = newCompleted;
+                const itemEl = document.querySelector(
+                    `#page-list .page-list-item.cover-${currentCoverKind}`
+                );
+                applyCompletedClass(itemEl, newCompleted);
+                updateCompletedButton(document.getElementById('toggle-page-completed-btn'), newCompleted);
+            }
+        } catch (error) {
+            log('ERROR', 'TOGGLE_COVER_COMPLETED_ERROR', { error: error.message });
+        }
+        return;
+    }
+
     if (PAGES_DATA.length === 0) return;
 
     const page = PAGES_DATA[currentPageIndex];
@@ -1079,6 +1125,9 @@ async function performUndo() {
                 break;
             case 'delete_photo':
                 await restoreDeletedPhoto(state.data.trash_token);
+                break;
+            case 'move_page':
+                await restoreMovedPage(state.data.newPageId, state.data.oldIndex);
                 break;
             case 'delete_source_photo':
             case 'delete_source_folder':
@@ -1209,6 +1258,10 @@ function initPagePanel() {
 
     pageList.textContent = '';
 
+    if (typeof COVER_DATA !== 'undefined' && COVER_DATA) {
+        pageList.appendChild(buildCoverPanelItem(COVER_DATA, 'cover'));
+    }
+
     PAGES_DATA.forEach((page, index) => {
         const item = document.createElement('div');
         item.className = 'page-list-item';
@@ -1273,12 +1326,17 @@ function initPagePanel() {
         pageList.appendChild(item);
     });
 
-    // Attach Sortable for page reordering (within-section only)
+    if (typeof BACKCOVER_DATA !== 'undefined' && BACKCOVER_DATA) {
+        pageList.appendChild(buildCoverPanelItem(BACKCOVER_DATA, 'backcover'));
+    }
+
+    // Page drag-and-drop disabled — plan 2026-05-13. Use "↕️ Mover a página" button instead.
+    // To re-enable: uncomment the block below and remove the `if (false)` wrapper.
     if (pagePanelSortable) {
         pagePanelSortable.destroy();
         pagePanelSortable = null;
     }
-    if (typeof Sortable !== 'undefined' && PAGES_DATA.length > 1) {
+    if (false && typeof Sortable !== 'undefined' && PAGES_DATA.length > 1) { // eslint-disable-line no-constant-condition
         pagePanelSortable = Sortable.create(pageList, {
             animation: 150,
             ghostClass: 'page-sortable-ghost',
@@ -1323,8 +1381,8 @@ function initPagePanel() {
 
 // Handle page reorder after a panel drag-and-drop
 async function handlePageReorder(draggedPageId) {
-    // Collect new order from DOM
-    const items = document.querySelectorAll('#page-list .page-list-item');
+    // Collect new order from DOM (content pages only — covers don't reorder)
+    const items = document.querySelectorAll('#page-list .page-list-item:not(.cover-list-item)');
     const orderedPageIds = Array.from(items).map(el => el.dataset.pageId);
 
     try {
@@ -1390,6 +1448,129 @@ async function handlePageReorder(draggedPageId) {
     }
 }
 
+// ─── Move Page to Position ───────────────────────────────────────────────────
+
+async function openMovePageDialog() {
+    const contentPages = PAGES_DATA; // all entries are content pages (covers are separate)
+    const totalPages = contentPages.length;
+    const currentUserNum = currentPageIndex + 1; // 1-based
+
+    const raw = await showPrompt({
+        title: '↕️ Mover a página',
+        message: `Mover página actual (${currentUserNum}) a la posición:`,
+        defaultValue: String(currentUserNum),
+        placeholder: `1 – ${totalPages}`,
+        okLabel: 'Mover',
+        cancelLabel: 'Cancelar',
+    });
+
+    if (raw === null) return; // cancelled
+
+    const targetNum = parseInt(raw, 10);
+    if (isNaN(targetNum) || targetNum < 1 || targetNum > totalPages) {
+        showToast(`Posición fuera de rango. Introduce un número entre 1 y ${totalPages}.`, { type: 'error' });
+        return;
+    }
+
+    const targetIndex = targetNum - 1; // 0-based
+    if (targetIndex === currentPageIndex) return; // no-op
+
+    const activePageId = contentPages[currentPageIndex].id;
+    const oldIndex = currentPageIndex;
+
+    // Build new ordered list: remove active page and insert at target index
+    const ids = contentPages.map(p => p.id);
+    ids.splice(currentPageIndex, 1);
+    ids.splice(targetIndex, 0, activePageId);
+
+    try {
+        const response = await fetch('/api/pages/reorder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ordered_page_ids: ids, moved_page_id: activePageId }),
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            // Determine the new page id after potential renaming
+            let newPageId = activePageId;
+            if (data.renamed_pages && data.renamed_pages.length > 0) {
+                const renamed = data.renamed_pages.find(r => r.old_id === activePageId);
+                if (renamed) newPageId = renamed.new_id;
+            }
+
+            // Push undo state BEFORE reloading PAGES_DATA
+            pushUndoState('move_page', { newPageId, oldIndex });
+
+            // Reload PAGES_DATA and refocus the moved page
+            const pagesResp = await fetch('/api/pages');
+            const pagesData = await pagesResp.json();
+            if (pagesData.success && pagesData.pages.length > 0) {
+                PAGES_DATA.length = 0;
+                pagesData.pages.forEach(p => PAGES_DATA.push(p));
+                const newIdx = PAGES_DATA.findIndex(p => p.id === newPageId);
+                await loadPage(Math.max(0, newIdx !== -1 ? newIdx : targetIndex));
+            }
+            if (data.section_changed) {
+                const shortId = data.section_changed.new_section_id.slice(0, 8);
+                showToast(`Página adoptada por sección ${shortId}…`, { type: 'info' });
+            } else {
+                showToast(`Página movida a la posición ${targetNum}.`, { type: 'success' });
+            }
+        } else {
+            showToast('Error al mover página: ' + (data.error || ''), { type: 'error' });
+        }
+    } catch (err) {
+        console.error('Failed to move page:', err);
+        showToast('Error de conexión al mover la página.', { type: 'error' });
+    }
+}
+
+async function restoreMovedPage(newPageId, oldIndex) {
+    // Find the current position of this page (its id may have been renamed again)
+    const currentIdx = PAGES_DATA.findIndex(p => p.id === newPageId);
+    if (currentIdx === -1) {
+        showToast('No se pudo deshacer: la página ya no existe con ese ID.', { type: 'error' });
+        return;
+    }
+    if (currentIdx === oldIndex) return; // already in the right place
+
+    const ids = PAGES_DATA.map(p => p.id);
+    ids.splice(currentIdx, 1);
+    ids.splice(oldIndex, 0, newPageId);
+
+    try {
+        const response = await fetch('/api/pages/reorder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ordered_page_ids: ids, moved_page_id: newPageId }),
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            let restoredId = newPageId;
+            if (data.renamed_pages && data.renamed_pages.length > 0) {
+                const renamed = data.renamed_pages.find(r => r.old_id === newPageId);
+                if (renamed) restoredId = renamed.new_id;
+            }
+            const pagesResp = await fetch('/api/pages');
+            const pagesData = await pagesResp.json();
+            if (pagesData.success && pagesData.pages.length > 0) {
+                PAGES_DATA.length = 0;
+                pagesData.pages.forEach(p => PAGES_DATA.push(p));
+                const idx = PAGES_DATA.findIndex(p => p.id === restoredId);
+                await loadPage(Math.max(0, idx !== -1 ? idx : oldIndex));
+            }
+            showToast('Movimiento deshecho.', { type: 'success' });
+        } else {
+            showToast('Error al deshacer movimiento: ' + (data.error || ''), { type: 'error' });
+        }
+    } catch (err) {
+        console.error('Failed to restore moved page:', err);
+        throw err;
+    }
+}
+
 // Move logical focus to the page panel (left) — highlights + toggles flags
 function focusPagePanel() {
     photoListFocused = false;
@@ -1397,7 +1578,7 @@ function focusPagePanel() {
     document.getElementById('album-sidebar')?.classList.remove('panel-has-focus');
     document.getElementById('page-panel')?.classList.add('panel-has-focus');
 
-    const items = document.querySelectorAll('#page-panel .page-list-item');
+    const items = document.querySelectorAll('#page-panel .page-list-item:not(.cover-list-item)');
     items.forEach((item, i) => {
         item.classList.toggle('keyboard-focus', i === currentPageIndex);
     });
@@ -1424,18 +1605,28 @@ function focusPhotoList() {
 }
 
 function navigateToPageFromPanel(index) {
+    const wasInCover = currentCoverKind !== null;
+    if (wasInCover) exitCoverDetail();
     const delta = index - currentPageIndex;
     if (delta !== 0) {
         navigatePage(delta);
+    } else if (wasInCover) {
+        // Same index, but we were in cover mode → re-render the page view.
+        loadPage(index);
     }
 }
 
 function updatePagePanelActiveItem(index) {
-    const items = document.querySelectorAll('#page-panel .page-list-item');
-    items.forEach((item, i) => {
-        item.classList.toggle('active', i === index);
+    // Clear active flag on every item (incl. covers), then set on the matching content page.
+    document.querySelectorAll('#page-panel .page-list-item').forEach(item => {
+        item.classList.remove('active');
     });
-    items[index]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const contentItems = document.querySelectorAll('#page-panel .page-list-item:not(.cover-list-item)');
+    const target = contentItems[index];
+    if (target) {
+        target.classList.add('active');
+        target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
 }
 
 function updatePagePanelTitle(index, newTitle) {
@@ -1444,13 +1635,33 @@ function updatePagePanelTitle(index, newTitle) {
 }
 
 function navigatePagePanelSelection(delta) {
-    const items = Array.from(document.querySelectorAll('#page-panel .page-list-item'));
+    // Keyboard ↑/↓ moves within the content pages only — covers aren't part of
+    // this navigation, they're focused by clicking.
+    const items = Array.from(
+        document.querySelectorAll('#page-panel .page-list-item:not(.cover-list-item)')
+    );
     if (items.length === 0) return;
-    const activeItem = document.querySelector('#page-panel .page-list-item.active');
-    const currentIndex = items.indexOf(activeItem);
-    const newIndex = Math.max(0, Math.min(items.length - 1, currentIndex + delta));
-    if (newIndex !== currentIndex) {
+    const newIndex = Math.max(0, Math.min(items.length - 1, currentPageIndex + delta));
+    if (newIndex !== currentPageIndex) {
         navigateToPageFromPanel(newIndex);
+    }
+}
+
+function navigatePagePanelToNextStateChange(delta) {
+    const items = Array.from(
+        document.querySelectorAll('#page-panel .page-list-item:not(.cover-list-item)')
+    );
+    if (items.length === 0) return;
+    const fromIndex = Math.max(0, Math.min(items.length - 1, currentPageIndex));
+    const currentCompleted = !!(PAGES_DATA[fromIndex] && PAGES_DATA[fromIndex].completed);
+    let i = fromIndex + delta;
+    while (i >= 0 && i < items.length) {
+        const itemCompleted = !!(PAGES_DATA[i] && PAGES_DATA[i].completed);
+        if (itemCompleted !== currentCompleted) {
+            navigateToPageFromPanel(i);
+            return;
+        }
+        i += delta;
     }
 }
 
@@ -1498,6 +1709,273 @@ function exitEditor() {
         showToast(t('success.can_close'), { type: 'info' });
     }, 100);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cover / Backcover editing
+// ═══════════════════════════════════════════════════════════════════════════
+
+let currentCoverKind = null;
+const COVER_KIND_LABEL = { cover: 'Portada', backcover: 'Contraportada' };
+
+function buildCoverPanelItem(coverData, kind) {
+    const item = document.createElement('div');
+    item.className = `page-list-item cover-list-item cover-${kind}`;
+    item.dataset.coverKind = kind;
+    item.dataset.pageId = coverData.id;
+
+    const chip = document.createElement('span');
+    chip.className = 'page-list-num cover-chip';
+    chip.textContent = kind === 'cover' ? '★' : '◀';
+
+    const titleWrap = document.createElement('span');
+    titleWrap.className = 'page-list-title-wrap';
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'page-list-title';
+    titleSpan.textContent = COVER_KIND_LABEL[kind];
+    titleWrap.appendChild(titleSpan);
+
+    const dot = document.createElement('span');
+    dot.className = 'completed-dot';
+    dot.title = 'Revisado';
+
+    item.appendChild(chip);
+    item.appendChild(titleWrap);
+    item.appendChild(dot);
+
+    if (coverData.completed) item.classList.add('is-completed');
+
+    item.addEventListener('click', () => loadCoverDetail(kind));
+
+    // Drop zone: dragging a workspace photo onto the cover item clones it as
+    // the new cover photo.
+    item.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        item.classList.add('drag-over');
+    });
+    item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+    item.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        item.classList.remove('drag-over');
+        const filenames = JSON.parse(e.dataTransfer.getData('text/plain') || '[]');
+        if (!filenames.length) return;
+        _crossPageDropHandled = true;
+        const sourcePage = PAGES_DATA[currentPageIndex];
+        if (!sourcePage) return;
+        await setCoverPhoto(kind, sourcePage.id, filenames[0]);
+    });
+
+    return item;
+}
+
+async function loadCoverDetail(kind) {
+    const data = kind === 'cover' ? COVER_DATA : BACKCOVER_DATA;
+    if (!data) return;
+    currentCoverKind = kind;
+
+    // Hide the page canvas + skeleton; reveal the cover detail card.
+    document.getElementById('pdf-preview')?.classList.add('hidden');
+    document.getElementById('pdf-preview-skeleton')?.classList.add('hidden');
+    const view = document.getElementById('cover-detail-view');
+    if (view) view.classList.remove('hidden');
+
+    // Update header indicator
+    const numEl = document.getElementById('current-page-num');
+    if (numEl) numEl.textContent = kind === 'cover' ? 'Portada' : 'Contraportada';
+
+    // Hide page-only action buttons; keep the "Completado" toggle wired to this folder.
+    togglePageOnlyActions(false);
+
+    // Update the cover image
+    const chip = document.getElementById('cover-detail-chip');
+    if (chip) chip.textContent = COVER_KIND_LABEL[kind];
+    const img = document.getElementById('cover-detail-image');
+    if (img) {
+        if (data.image) {
+            img.src = `/api/page/${encodeURIComponent(data.id)}/image/${encodeURIComponent(data.image)}?t=${Date.now()}`;
+            img.alt = COVER_KIND_LABEL[kind];
+        } else {
+            img.removeAttribute('src');
+            img.alt = '(sin foto)';
+        }
+    }
+
+    // Highlight item in the panel
+    document.querySelectorAll('#page-list .page-list-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.coverKind === kind);
+    });
+
+    // Sync the Completado button with this cover's flag
+    const completedBtn = document.getElementById('toggle-page-completed-btn');
+    if (completedBtn) updateCompletedButton(completedBtn, !!data.completed);
+
+    log('INFO', 'COVER_DETAIL_LOAD', { kind, image: data.image });
+}
+
+function exitCoverDetail() {
+    currentCoverKind = null;
+    document.getElementById('pdf-preview')?.classList.remove('hidden');
+    document.getElementById('pdf-preview-skeleton')?.classList.remove('hidden');
+    document.getElementById('cover-detail-view')?.classList.add('hidden');
+    togglePageOnlyActions(true);
+}
+
+function togglePageOnlyActions(visible) {
+    const ids = ['layout-mode-btn', 'shuffle-layout-btn', 'grid-equalize-btn', 'explode-page-btn', 'move-page-btn', 'delete-page-btn'];
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = visible ? '' : 'none';
+    });
+}
+
+const coverPickerState = {
+    kind: null,
+    tiles: [],
+    filteredTiles: [],
+    filterText: '',
+    debounceTimer: null,
+};
+
+function normalizeForSearch(s) {
+    return (s || '').toString().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+}
+
+async function openCoverPicker(kind) {
+    const modal = document.getElementById('cover-picker-modal');
+    const body = document.getElementById('cover-picker-body');
+    const title = document.getElementById('cover-picker-title');
+    const filterInput = document.getElementById('cover-picker-filter-input');
+    if (!modal || !body) return;
+
+    coverPickerState.kind = kind;
+    coverPickerState.tiles = [];
+    coverPickerState.filteredTiles = [];
+    coverPickerState.filterText = '';
+    if (filterInput) filterInput.value = '';
+
+    title.textContent = kind === 'cover' ? 'Elegir foto de portada' : 'Elegir foto de contraportada';
+    body.innerHTML = '<p class="cover-picker-loading">Cargando fotos…</p>';
+    modal.classList.remove('hidden');
+
+    try {
+        const tiles = [];
+        for (const page of PAGES_DATA) {
+            const r = await fetch(`/api/page/${encodeURIComponent(page.id)}`);
+            const d = await r.json();
+            if (!d.success) continue;
+            (d.page.images || []).forEach(img => {
+                tiles.push({ pageId: page.id, pageTitle: page.title, pageSubtitle: page.subtitle || '', image: img });
+            });
+        }
+        coverPickerState.tiles = tiles;
+        coverPickerState.filteredTiles = tiles.slice();
+        renderCoverPickerTiles(body, kind, coverPickerState.filteredTiles);
+    } catch (e) {
+        body.innerHTML = '<p class="cover-picker-error">Error al cargar fotos.</p>';
+    }
+}
+
+function applyCoverPickerFilter() {
+    const body = document.getElementById('cover-picker-body');
+    if (!body) return;
+    const query = normalizeForSearch(coverPickerState.filterText);
+    if (!query) {
+        coverPickerState.filteredTiles = coverPickerState.tiles.slice();
+    } else {
+        coverPickerState.filteredTiles = coverPickerState.tiles.filter(tile => {
+            const target = normalizeForSearch(`${tile.pageTitle} ${tile.pageSubtitle}`);
+            return target.indexOf(query) !== -1;
+        });
+    }
+    renderCoverPickerTiles(body, coverPickerState.kind, coverPickerState.filteredTiles);
+}
+
+function renderCoverPickerTiles(container, kind, tiles) {
+    container.innerHTML = '';
+    if (!tiles.length) {
+        const msg = coverPickerState.filterText
+            ? 'Ninguna foto coincide con el filtro'
+            : 'No hay fotos disponibles.';
+        container.innerHTML = `<p class="cover-picker-empty">${msg}</p>`;
+        return;
+    }
+    const grid = document.createElement('div');
+    grid.className = 'cover-picker-grid';
+    tiles.forEach(({ pageId, pageTitle, image }) => {
+        const tile = document.createElement('button');
+        tile.className = 'cover-picker-tile';
+        tile.type = 'button';
+        const im = document.createElement('img');
+        im.loading = 'lazy';
+        im.src = `/api/page/${encodeURIComponent(pageId)}/image/${encodeURIComponent(image)}`;
+        im.alt = image;
+        const cap = document.createElement('span');
+        cap.className = 'cover-picker-tile-caption';
+        cap.textContent = pageTitle || pageId;
+        tile.appendChild(im);
+        tile.appendChild(cap);
+        tile.addEventListener('click', () => setCoverPhoto(kind, pageId, image));
+        grid.appendChild(tile);
+    });
+    container.appendChild(grid);
+}
+
+function closeCoverPicker() {
+    clearTimeout(coverPickerState.debounceTimer);
+    const filterInput = document.getElementById('cover-picker-filter-input');
+    if (filterInput) filterInput.value = '';
+    document.getElementById('cover-picker-modal')?.classList.add('hidden');
+}
+
+function handleCoverPickerOverlayClick(event) {
+    if (event.target?.id === 'cover-picker-modal') closeCoverPicker();
+}
+
+async function setCoverPhoto(kind, sourcePage, sourceImage) {
+    try {
+        const r = await fetch(`/api/cover/${kind}/photo`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source_page: sourcePage, source_image: sourceImage }),
+        });
+        const d = await r.json();
+        if (!d.success) {
+            showToast('No se pudo cambiar la foto: ' + (d.error || ''), { type: 'error' });
+            return;
+        }
+        // Update in-memory cover data and detail view.
+        const target = kind === 'cover' ? COVER_DATA : BACKCOVER_DATA;
+        if (target) target.image = d.image;
+        if (currentCoverKind === kind) {
+            await loadCoverDetail(kind);
+        }
+        closeCoverPicker();
+        showToast('Foto de ' + (kind === 'cover' ? 'portada' : 'contraportada') + ' actualizada', { type: 'success' });
+    } catch (e) {
+        showToast('Error de conexión', { type: 'error' });
+    }
+}
+
+// Bind the "Elegir foto" button and the filter input once on init.
+document.addEventListener('DOMContentLoaded', () => {
+    const pickBtn = document.getElementById('cover-pick-btn');
+    if (pickBtn) {
+        pickBtn.addEventListener('click', () => {
+            if (currentCoverKind) openCoverPicker(currentCoverKind);
+        });
+    }
+
+    const filterInput = document.getElementById('cover-picker-filter-input');
+    if (filterInput) {
+        filterInput.addEventListener('input', e => {
+            clearTimeout(coverPickerState.debounceTimer);
+            coverPickerState.debounceTimer = setTimeout(() => {
+                coverPickerState.filterText = e.target.value;
+                applyCoverPickerFilter();
+            }, 200);
+        });
+    }
+});
 
 // Initialize when tab becomes active
 document.addEventListener('DOMContentLoaded', () => {

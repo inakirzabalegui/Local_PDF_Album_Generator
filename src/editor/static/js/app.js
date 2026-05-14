@@ -77,6 +77,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('reset-album-header-btn')?.addEventListener('click', regenerateAlbumFromHeader);
     document.getElementById('sync-album-header-btn')?.addEventListener('click', syncAlbumFromHeader);
+    document.getElementById('resort-sections-btn')?.addEventListener('click', resortSections);
     document.getElementById('undo-btn')?.addEventListener('click', performUndo);
 
     initPanelResize(document.getElementById('page-panel'), 'sidebar-width-pages');
@@ -471,9 +472,9 @@ async function bootstrapNewFolder(sourcePath) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ source_path: sourcePath })
         });
-        
+
         const data = await response.json();
-        
+
         if (data.success) {
             // Persist the last opened album path
             localStorage.setItem('lastAlbumPath', sourcePath);
@@ -488,5 +489,72 @@ async function bootstrapNewFolder(sourcePath) {
         showToast(`${t('launcher.connection_error')}${error.message}`, { type: 'error' });
         btn.disabled = false;
         btn.textContent = t('header.open_folder');
+    }
+}
+
+// ── Resort sections by folder date ──────────────────────────────────────────
+async function resortSections() {
+    const confirmed = await showConfirm({
+        title: '🔧 Reordenar secciones',
+        message: 'Reordenar todas las secciones por fecha de carpeta. Las ediciones (títulos, layouts, fotos) se conservan. ¿Continuar?',
+        okLabel: 'Reordenar',
+        cancelLabel: 'Cancelar',
+    });
+    if (!confirmed) return;
+
+    const btn = document.getElementById('resort-sections-btn');
+    if (btn) btn.disabled = true;
+
+    // Remember the current section to refocus after reload
+    let currentSectionId = null;
+    if (typeof PAGES_DATA !== 'undefined' && typeof currentPageIndex !== 'undefined') {
+        const activePage = PAGES_DATA[currentPageIndex];
+        if (activePage) currentSectionId = activePage.section_id || null;
+    }
+
+    try {
+        const response = await fetch('/api/sections/resort', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            const movedCount = data.renamed_pages ? data.renamed_pages.length : 0;
+            showToast(`Secciones reordenadas: ${movedCount} páginas movidas.`, { type: 'success' });
+
+            // Reload PAGES_DATA
+            const pagesResp = await fetch('/api/pages');
+            const pagesData = await pagesResp.json();
+
+            if (pagesData.success && pagesData.pages.length > 0 && typeof PAGES_DATA !== 'undefined') {
+                PAGES_DATA.length = 0;
+                pagesData.pages.forEach(p => PAGES_DATA.push(p));
+
+                // Refocus: use focus_section_id from response, or fall back to remembered section
+                const targetSectionId = data.focus_section_id || currentSectionId;
+                let targetIndex = 0;
+                if (targetSectionId) {
+                    const idx = PAGES_DATA.findIndex(p => p.section_id === targetSectionId);
+                    if (idx !== -1) targetIndex = idx;
+                }
+
+                if (typeof loadPage === 'function') {
+                    await loadPage(targetIndex);
+                } else {
+                    window.location.reload();
+                }
+            } else {
+                window.location.reload();
+            }
+        } else {
+            showToast('Error al reordenar secciones: ' + (data.error || ''), { type: 'error' });
+        }
+    } catch (err) {
+        console.error('Failed to resort sections:', err);
+        showToast('Error de conexión al reordenar secciones.', { type: 'error' });
+    } finally {
+        if (btn) btn.disabled = false;
     }
 }

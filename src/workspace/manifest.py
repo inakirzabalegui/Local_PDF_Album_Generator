@@ -127,6 +127,65 @@ def remove_photo_from_manifest(page_folder: Path, image_name: str) -> bool:
     return True
 
 
+def pop_manifest_entry(page_folder: Path, image_name: str) -> PhotoManifestEntry | None:
+    """Remove and return a single manifest entry. Returns None if missing."""
+    manifest = read_page_manifest(page_folder)
+    if manifest is None or image_name not in manifest.photos:
+        return None
+    entry = manifest.photos.pop(image_name)
+    write_page_manifest(manifest)
+    return entry
+
+
+def add_photo_to_manifest(
+    page_folder: Path,
+    image_name: str,
+    source_path: str,
+    source_mtime: float = 0.0,
+    sha1: str = "",
+    section_id: str | None = None,
+) -> bool:
+    """Upsert a single entry into a page's manifest, creating the file if needed."""
+    manifest = read_page_manifest(page_folder)
+    if manifest is None:
+        manifest = PageManifest(folder=page_folder, section_id=section_id or "")
+    elif section_id and not manifest.section_id:
+        manifest.section_id = section_id
+    manifest.photos[image_name] = PhotoManifestEntry(
+        image_name=image_name,
+        source_path=source_path,
+        source_mtime=source_mtime,
+        sha1=sha1,
+    )
+    write_page_manifest(manifest)
+    return True
+
+
+def move_photo_in_manifest(
+    src_folder: Path,
+    dst_folder: Path,
+    src_image_name: str,
+    dst_image_name: str,
+    dst_section_id: str | None = None,
+) -> bool:
+    """Move a manifest entry from src page to dst page, preserving source metadata.
+
+    Returns True if the source entry existed and was relocated.
+    """
+    entry = pop_manifest_entry(src_folder, src_image_name)
+    if entry is None:
+        return False
+    add_photo_to_manifest(
+        dst_folder,
+        dst_image_name,
+        source_path=entry.source_path,
+        source_mtime=entry.source_mtime,
+        sha1=entry.sha1,
+        section_id=dst_section_id,
+    )
+    return True
+
+
 def collect_workspace_manifests(workspace: Path) -> list[PageManifest]:
     """Read all page manifests in a workspace, sorted by page folder name."""
     manifests: list[PageManifest] = []

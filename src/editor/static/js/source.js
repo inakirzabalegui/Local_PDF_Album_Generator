@@ -13,6 +13,7 @@ let sourcePhotoListFocused = false;
 let sourceSortableInstance = null;
 let draggingSourceFilenames = [];
 let _crossEventDropHandled = false;
+let _sourceInitDone = false;
 
 // Initialize source mode when tab is active
 async function initSourceMode() {
@@ -22,7 +23,15 @@ async function initSourceMode() {
     setupSourceEventListeners();
 
     if (eventFolders.length > 0) {
-        await loadEvent(0);
+        let targetIndex;
+        if (!_sourceInitDone) {
+            const firstIncomplete = eventFolders.findIndex(e => e.completed === false);
+            targetIndex = firstIncomplete >= 0 ? firstIncomplete : 0;
+            _sourceInitDone = true;
+        } else {
+            targetIndex = Math.max(0, Math.min(eventFolders.length - 1, currentEventIndex));
+        }
+        await loadEvent(targetIndex);
     }
 }
 
@@ -66,14 +75,22 @@ function handleSourceKeyboard(e) {
         } else if (e.key === 'ArrowUp') {
             e.preventDefault();
             if (eventPanelFocused && eventPanelOpen) {
-                navigateEventPanelSelection(-1);
+                if (e.ctrlKey || e.metaKey) {
+                    navigateEventPanelToNextStateChange(-1);
+                } else {
+                    navigateEventPanelSelection(-1);
+                }
             } else {
                 navigateSourcePhotoSelection(-1);
             }
         } else if (e.key === 'ArrowDown') {
             e.preventDefault();
             if (eventPanelFocused && eventPanelOpen) {
-                navigateEventPanelSelection(1);
+                if (e.ctrlKey || e.metaKey) {
+                    navigateEventPanelToNextStateChange(1);
+                } else {
+                    navigateEventPanelSelection(1);
+                }
             } else {
                 navigateSourcePhotoSelection(1);
             }
@@ -788,14 +805,32 @@ function updateEventPanelActiveItem(index) {
 function navigateEventPanelSelection(delta) {
     const items = Array.from(document.querySelectorAll('#event-panel .page-list-item'));
     if (items.length === 0) return;
-    
+
     const activeItem = document.querySelector('#event-panel .page-list-item.active');
     const currentIndex = items.indexOf(activeItem);
-    
+
     const newIndex = Math.max(0, Math.min(items.length - 1, currentIndex + delta));
-    
+
     if (newIndex !== currentIndex) {
         loadEvent(newIndex);
+    }
+}
+
+function navigateEventPanelToNextStateChange(delta) {
+    const items = Array.from(document.querySelectorAll('#event-panel .page-list-item'));
+    if (items.length === 0) return;
+    const activeItem = document.querySelector('#event-panel .page-list-item.active');
+    const fromIndex = items.indexOf(activeItem);
+    if (fromIndex < 0) return;
+    const currentCompleted = !!(eventFolders[fromIndex] && eventFolders[fromIndex].completed);
+    let i = fromIndex + delta;
+    while (i >= 0 && i < items.length) {
+        const itemCompleted = !!(eventFolders[i] && eventFolders[i].completed);
+        if (itemCompleted !== currentCompleted) {
+            loadEvent(i);
+            return;
+        }
+        i += delta;
     }
 }
 

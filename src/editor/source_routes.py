@@ -159,7 +159,7 @@ def api_restore_source():
         if not token:
             return jsonify({'success': False, 'error': 'No trash_token provided'}), 400
 
-        restored = restore_from_trash(source, token)
+        restored, _payload_meta = restore_from_trash(source, token)
         return jsonify({'success': True, 'restored_path': str(restored.relative_to(source))})
 
     except FileNotFoundError as e:

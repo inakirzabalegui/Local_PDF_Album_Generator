@@ -48,6 +48,11 @@ from src.workspace.manifest import (
     write_page_manifest,
 )
 from src.workspace.reconciler import _sub_group_from_source_path
+from src.workspace.tombstones import (
+    read_tombstones,
+    remove_tombstone,
+    rewrite_section_paths as rewrite_tombstone_section_paths,
+)
 
 if TYPE_CHECKING:
     from src.ingestion.scanner import PhotoInfo
@@ -240,6 +245,56 @@ def _backfill_workspace_section_ids(
     return changed
 
 
+def _folder_section_id_lookup(pages: list[PageConfig]) -> dict[str, str]:
+    """folder name → section_id (from PageConfig, the source of truth)."""
+    return {p.folder.name: (p.section_id or "") for p in pages}
+
+
+def _compute_path_rewrite_map(
+    manifests: list[PageManifest],
+    group_to_sid: dict[str, str],
+    folder_to_sid: dict[str, str],
+) -> dict[tuple[str, str], str]:
+    """Find (section_id, old_prefix) → new_prefix rewrites for renamed sections.
+
+    A rewrite is needed when a manifest entry's first path component (the
+    source folder name) no longer matches the current source group folder
+    for that section_id. This happens when the user renames a source folder
+    in disk; without rewriting, every photo in the section looks "removed
+    from old path, added at new path".
+    """
+    sid_to_new_group: dict[str, str] = {sid: group for group, sid in group_to_sid.items()}
+    rewrite_map: dict[tuple[str, str], str] = {}
+    for m in manifests:
+        sid = m.section_id or folder_to_sid.get(m.folder.name, "")
+        if not sid:
+            continue
+        new_group = sid_to_new_group.get(sid)
+        if not new_group:
+            continue
+        for entry in m.photos.values():
+            sp = entry.source_path
+            if not sp:
+                continue
+            head, sep, _tail = sp.partition("/")
+            if not sep:
+                continue
+            if head != new_group:
+                rewrite_map[(sid, head)] = new_group
+    return rewrite_map
+
+
+def _apply_rewrite(path: str, section_id: str, rewrite_map: dict[tuple[str, str], str]) -> str:
+    """Return path with its first component substituted per rewrite_map (if any)."""
+    head, sep, tail = path.partition("/")
+    if not sep:
+        return path
+    new_prefix = rewrite_map.get((section_id, head))
+    if new_prefix is None or new_prefix == head:
+        return path
+    return f"{new_prefix}/{tail}"
+
+
 def compute_sync_diff(source_root: Path, workspace: Path) -> SyncDiff:
     """Compare source vs workspace. Returns SyncDiff. Does NOT mutate state."""
     diff = SyncDiff(has_manifests=workspace_has_manifests(workspace))
@@ -272,12 +327,23 @@ def compute_sync_diff(source_root: Path, workspace: Path) -> SyncDiff:
 
     # Build set of source rel paths currently in workspace manifests
     manifests = collect_workspace_manifests(workspace)
+    folder_to_sid = _folder_section_id_lookup(pages)
+    rewrite_map = _compute_path_rewrite_map(manifests, group_to_sid, folder_to_sid)
+    tombstones_raw = read_tombstones(workspace)
+    # Rewrite tombstone paths in memory so they match current source paths after
+    # the user renamed the source folder of a section.
+    tombstones = {
+        (sid, _apply_rewrite(sp, sid, rewrite_map)) for (sid, sp) in tombstones_raw
+    }
+
     manifest_source_paths: set[str] = set()
     folder_to_manifest: dict[str, PageManifest] = {}
     for m in manifests:
         folder_to_manifest[m.folder.name] = m
+        sid = m.section_id or folder_to_sid.get(m.folder.name, "")
         for entry in m.photos.values():
-            manifest_source_paths.add(entry.source_path)
+            rewritten = _apply_rewrite(entry.source_path, sid, rewrite_map)
+            manifest_source_paths.add(rewritten)
 
     # Build set of source rel paths currently on disk
     source_rel_set: set[str] = set()
@@ -287,19 +353,25 @@ def compute_sync_diff(source_root: Path, workspace: Path) -> SyncDiff:
         source_rel_set.add(rel)
         rel_to_photo[rel] = ph
 
-    # Added photos: in source but not in any manifest
+    # Added photos: in source, not in manifests, not tombstoned
     for rel, ph in rel_to_photo.items():
         if rel in manifest_source_paths:
             continue
         sid = group_to_sid.get(ph.source_group, "")
+        if (sid, rel) in tombstones or ("", rel) in tombstones:
+            continue
         diff.added_photos.append(AddedPhoto(
             source_rel=rel, section_id=sid, source_group=ph.source_group,
         ))
 
-    # Removed photos: in manifest but no longer in source
+    # Removed photos: in manifest but no longer in source (after path rewrite)
     for m in manifests:
+        sid = m.section_id or folder_to_sid.get(m.folder.name, "")
         for img_name, entry in m.photos.items():
-            if entry.source_path and entry.source_path not in source_rel_set:
+            if not entry.source_path:
+                continue
+            rewritten = _apply_rewrite(entry.source_path, sid, rewrite_map)
+            if rewritten not in source_rel_set:
                 diff.removed_photos.append(RemovedPhoto(
                     image_name=img_name,
                     page_folder=m.folder.name,
@@ -443,6 +515,35 @@ def apply_sync(
     _backfill_workspace_section_ids(workspace, pages, source_root)
 
     max_per_page = cfg.photos_per_page_max
+
+    # ── 0. Persist source-path rewrites for renamed sections ────────────
+    # Same logic used in compute_sync_diff; this writes the new prefix to disk
+    # so manifests and tombstones stay in sync with the source on apply.
+    scan_for_rewrite = scan_directory(source_root)
+    group_to_sid_apply: dict[str, str] = {}
+    for ph in scan_for_rewrite.photos:
+        if ph.source_group not in group_to_sid_apply:
+            sid, _ = _ensure_source_section_id(source_root, ph.source_group)
+            group_to_sid_apply[ph.source_group] = sid
+
+    manifests_for_rewrite = collect_workspace_manifests(workspace)
+    folder_to_sid_apply = _folder_section_id_lookup(pages)
+    rewrite_map_apply = _compute_path_rewrite_map(
+        manifests_for_rewrite, group_to_sid_apply, folder_to_sid_apply,
+    )
+    if rewrite_map_apply:
+        for m in manifests_for_rewrite:
+            sid = m.section_id or folder_to_sid_apply.get(m.folder.name, "")
+            changed = False
+            for entry in m.photos.values():
+                new_path = _apply_rewrite(entry.source_path, sid, rewrite_map_apply)
+                if new_path != entry.source_path:
+                    entry.source_path = new_path
+                    changed = True
+            if changed:
+                write_page_manifest(m)
+        for (sid, old_prefix), new_prefix in rewrite_map_apply.items():
+            rewrite_tombstone_section_paths(workspace, sid, old_prefix, new_prefix)
 
     # ── 1. Remove obsolete photos ────────────────────────────────────────
     _cb({"step": "removing_photos", "total": len(diff.removed_photos)})

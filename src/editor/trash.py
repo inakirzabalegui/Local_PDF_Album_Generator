@@ -8,17 +8,20 @@ folder (see api_bootstrap).
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("album.editor.trash")
 
 TRASH_DIR_NAME = ".trash"
 ENTRY_META = "entry.meta"
+ENTRY_PAYLOAD_META = "payload.meta.json"
 
 
 @dataclass(frozen=True)
@@ -26,10 +29,13 @@ class TrashToken:
     """Handle returned when something is moved to the trash.
 
     token_id identifies the trash entry; origin_rel is the original path
-    relative to the trash root, used to restore it.
+    relative to the trash root, used to restore it. payload_meta carries
+    optional restore hints (manifest entry, tombstone key, etc.) — see
+    move_to_trash.
     """
     token_id: str
     origin_rel: str
+    payload_meta: dict[str, Any] = field(default_factory=dict)
 
 
 def _trash_root(root: Path) -> Path:
@@ -49,10 +55,16 @@ def _new_entry_dir(trash: Path) -> tuple[str, Path]:
     return token_id, entry
 
 
-def move_to_trash(root: Path, target: Path) -> TrashToken:
+def move_to_trash(
+    root: Path,
+    target: Path,
+    payload_meta: dict[str, Any] | None = None,
+) -> TrashToken:
     """Move `target` (file or folder) into `<root>/.trash/<token>/`.
 
-    `target` must live under `root`. Returns a token usable by
+    `target` must live under `root`. Optional `payload_meta` is persisted next
+    to the trashed payload and returned on restore — callers use it to rebuild
+    side-state (manifests, tombstones, etc.). Returns a token usable by
     restore_from_trash.
     """
     root = root.resolve()
@@ -74,16 +86,44 @@ def move_to_trash(root: Path, target: Path) -> TrashToken:
     meta = entry / ENTRY_META
     meta.write_text(str(origin_rel), encoding="utf-8")
 
+    meta_obj = dict(payload_meta or {})
+    if meta_obj:
+        try:
+            (entry / ENTRY_PAYLOAD_META).write_text(
+                json.dumps(meta_obj, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning(f"Failed to write payload meta for {token_id}: {e}")
+
     logger.info(f"Trashed {origin_rel} → {token_id}")
-    return TrashToken(token_id=token_id, origin_rel=str(origin_rel))
+    return TrashToken(
+        token_id=token_id,
+        origin_rel=str(origin_rel),
+        payload_meta=meta_obj,
+    )
 
 
-def restore_from_trash(root: Path, token_id: str) -> Path:
+def read_payload_meta(root: Path, token_id: str) -> dict[str, Any]:
+    """Return the payload metadata stored alongside a trash entry, if any."""
+    entry = _trash_root(root.resolve()) / token_id
+    meta_path = entry / ENTRY_PAYLOAD_META
+    if not meta_path.is_file():
+        return {}
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"Failed reading payload meta for {token_id}: {e}")
+        return {}
+
+
+def restore_from_trash(root: Path, token_id: str) -> tuple[Path, dict[str, Any]]:
     """Restore the entry identified by `token_id` to its original location.
 
-    Returns the restored path. Raises if the token is unknown or if the
-    destination already exists (caller conflict — e.g. user recreated the
-    file manually).
+    Returns (restored_path, payload_meta). `payload_meta` is the dict that was
+    passed to move_to_trash (or {} if none). Raises if the token is unknown
+    or if the destination already exists (caller conflict — e.g. user recreated
+    the file manually).
     """
     root = root.resolve()
     trash = _trash_root(root)
@@ -96,8 +136,16 @@ def restore_from_trash(root: Path, token_id: str) -> Path:
         raise FileNotFoundError(f"Trash entry missing metadata: {token_id}")
     origin_rel = meta.read_text(encoding="utf-8").strip()
 
-    # The trashed payload is the only non-meta child of entry
-    payloads = [p for p in entry.iterdir() if p.name != ENTRY_META]
+    payload_meta_path = entry / ENTRY_PAYLOAD_META
+    payload_meta: dict[str, Any] = {}
+    if payload_meta_path.is_file():
+        try:
+            payload_meta = json.loads(payload_meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            payload_meta = {}
+
+    sidecars = {ENTRY_META, ENTRY_PAYLOAD_META}
+    payloads = [p for p in entry.iterdir() if p.name not in sidecars]
     if len(payloads) != 1:
         raise RuntimeError(
             f"Malformed trash entry {token_id}: expected 1 payload, found {len(payloads)}"
@@ -115,12 +163,14 @@ def restore_from_trash(root: Path, token_id: str) -> Path:
     # remove the now-empty entry
     try:
         meta.unlink()
+        if payload_meta_path.exists():
+            payload_meta_path.unlink()
         entry.rmdir()
     except OSError:
         logger.warning(f"Could not clean up trash entry {token_id}")
 
     logger.info(f"Restored {origin_rel} from {token_id}")
-    return destination
+    return destination, payload_meta
 
 
 def empty_trash(root: Path) -> int:

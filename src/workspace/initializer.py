@@ -16,6 +16,7 @@ from src.utils.naming import (
     extract_date_from_folder,
     folder_name_to_slug,
     prettify_folder_name,
+    section_date_sort_key,
 )
 from src.workspace.config import GlobalConfig, PageConfig
 from src.workspace.manifest import (
@@ -151,6 +152,30 @@ def create_workspace(
     cfg.date_range = _calculate_date_range(all_dates)
     logger.debug(f"Calculated album date range: {cfg.date_range}")
 
+    # ── Sort groups by folder prefix YYYYMMDD_ → median EXIF → stable hash ──
+    import statistics as _statistics
+
+    def _group_sort_key(group_name: str) -> tuple:
+        prefix_key = section_date_sort_key(group_name)
+        if prefix_key is not None:
+            return (0, prefix_key, 0)
+        # Fallback: median date_taken of photos in this group
+        photos_in_group = groups_dict[group_name]
+        dates = [p.date_taken for p in photos_in_group if p.date_taken is not None]
+        if dates:
+            # date_taken may be datetime or comparable; convert to timestamp for median
+            try:
+                timestamps = sorted(d.timestamp() if hasattr(d, 'timestamp') else float(d) for d in dates)
+                median_ts = _statistics.median(timestamps)
+                return (1, median_ts, 0)
+            except Exception:
+                pass
+        # Last resort: deterministic hash
+        return (2, 0, hash(group_name) & 0xFFFFFFFF)
+
+    groups_dict = dict(sorted(groups_dict.items(), key=lambda kv: _group_sort_key(kv[0])))
+    logger.debug(f"Section order after sort: {list(groups_dict.keys())}")
+
     target_per_page = (cfg.photos_per_page_min + cfg.photos_per_page_max) // 2
     layout_modes = ["mesa_de_luz", "grid_compacto", "hibrido"]
 
@@ -175,6 +200,26 @@ def create_workspace(
         section_title = build_section_title(source_group)
         title_slug = folder_name_to_slug(prettify_folder_name(source_group))
         section_id = _resolve_section_id(source_group)
+
+        # Compute section_date (DD/MM/YYYY or "")
+        _sec_date = extract_date_from_folder(source_group)
+        if _sec_date is None:
+            # Try median EXIF date_taken
+            _dates = [p.date_taken for p in group_photos if p.date_taken is not None]
+            if _dates:
+                try:
+                    import statistics as _stat2
+                    _timestamps = sorted(
+                        d.timestamp() if hasattr(d, 'timestamp') else float(d)
+                        for d in _dates
+                    )
+                    _median_ts = _stat2.median(_timestamps)
+                    import datetime as _dt
+                    _median_dt = _dt.datetime.fromtimestamp(_median_ts)
+                    _sec_date = _median_dt.strftime("%d/%m/%Y")
+                except Exception:
+                    pass
+        section_date_str = _sec_date or ""
 
         for chunk_idx, chunk in enumerate(chunks, 1):
             folder_name = f"pagina_{page_number:02d}_{title_slug}"
@@ -238,6 +283,7 @@ def create_workspace(
                     layout_mode=selected_mode,
                     section_id=section_id,
                     sub_group_ids=list(page_sub_groups),
+                    section_date=section_date_str,
                 )
             )
             page_number += 1

@@ -18,6 +18,14 @@ from src.workspace.config import (
     read_page_configs,
     write_page_configs,
 )
+from src.workspace.manifest import (
+    add_photo_to_manifest,
+    move_photo_in_manifest,
+    pop_manifest_entry,
+    read_page_manifest,
+    write_page_manifest,
+)
+from src.workspace.tombstones import add_tombstone
 from src.render.pdf_generator import generate_single_page_pdf
 from src.editor.trash import move_to_trash, TrashToken
 
@@ -114,8 +122,9 @@ def reorder_photos(page_folder: Path, new_order: list[str]) -> bool:
 def delete_photo(page_folder: Path, filename: str, workspace_root: Path) -> TrashToken | None:
     """Move a photo into the workspace trash and update the page YAML.
 
-    Returns a TrashToken on success so the caller can build an undo entry, or
-    None if the photo was not found / the operation failed.
+    Records the manifest entry as restore hint in the trash and adds a
+    tombstone so sync does not re-import the photo on its next pass.
+    Returns a TrashToken on success or None on failure.
     """
     try:
         photo_path = page_folder / filename
@@ -123,11 +132,39 @@ def delete_photo(page_folder: Path, filename: str, workspace_root: Path) -> Tras
             logger.error(f"Photo not found: {filename}")
             return None
 
-        token = move_to_trash(workspace_root, photo_path)
+        # Capture manifest entry + section_id BEFORE removing anything,
+        # so we can rebuild state if the user restores from trash.
+        manifest = read_page_manifest(page_folder)
+        manifest_entry = manifest.photos.get(filename) if manifest else None
+        section_id = ""
+        config_path = page_folder / "page_config.yaml"
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                pre_data = yaml.safe_load(f) or {}
+            section_id = str(pre_data.get('section_id', '') or '')
+
+        payload_meta: dict = {
+            "kind": "photo",
+            "page_folder": page_folder.name,
+            "image_name": filename,
+            "section_id": section_id,
+        }
+        if manifest_entry is not None:
+            payload_meta["source_path"] = manifest_entry.source_path
+            payload_meta["source_mtime"] = manifest_entry.source_mtime
+            payload_meta["sha1"] = manifest_entry.sha1
+
+        token = move_to_trash(workspace_root, photo_path, payload_meta=payload_meta)
         logger.info(f"Trashed photo: {filename} (token {token.token_id})")
 
+        # Drop the manifest entry so subsequent syncs don't see a phantom
+        # "photo missing from source" delta. The original source file is
+        # untouched.
+        if manifest_entry is not None:
+            pop_manifest_entry(page_folder, filename)
+            add_tombstone(workspace_root, section_id, manifest_entry.source_path)
+
         # Update page_config.yaml photo_count
-        config_path = page_folder / "page_config.yaml"
         if config_path.exists():
             with open(config_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f) or {}
@@ -152,6 +189,86 @@ def delete_photo(page_folder: Path, filename: str, workspace_root: Path) -> Tras
         return None
 
 
+def normalize_page_numbers(workspace: Path) -> int:
+    """Renumber all content pages sequentially and rename folders to match.
+
+    Walks every content page (skipping cover/backcover), sorts by current
+    page_number with folder-name tie-breaker (so an existing 'pagina_NN_slug'
+    sorts before its 'pagina_NN_slug_new' sibling), and reassigns sequential
+    page_numbers starting from the current minimum. Uses a two-phase tmp
+    rename to avoid collisions on disk.
+
+    Returns the number of pages whose folder name or page_number changed.
+    """
+    import re
+    import uuid
+
+    folder_pattern = re.compile(r"^pagina_(\d+)_(.+)$")
+
+    entries: list[tuple[Path, dict]] = []
+    for entry in workspace.iterdir():
+        if not entry.is_dir():
+            continue
+        cfg_path = entry / "page_config.yaml"
+        if not cfg_path.exists():
+            continue
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg_data = yaml.safe_load(f) or {}
+        if cfg_data.get("is_cover") or cfg_data.get("is_backcover"):
+            continue
+        entries.append((entry, cfg_data))
+
+    if not entries:
+        return 0
+
+    entries.sort(key=lambda x: (x[1].get("page_number", 0), x[0].name))
+
+    start_num = min(d.get("page_number", 1) for _, d in entries)
+    target: list[tuple[Path, dict, int, str]] = []
+    for i, (entry, cfg_data) in enumerate(entries):
+        new_num = start_num + i
+        m = folder_pattern.match(entry.name)
+        if m:
+            slug = m.group(2)
+            if slug.endswith("_new"):
+                slug = slug[: -len("_new")]
+            new_name = f"pagina_{new_num:02d}_{slug}"
+        else:
+            new_name = entry.name
+        target.append((entry, cfg_data, new_num, new_name))
+
+    needs_change = [
+        t for t in target
+        if t[0].name != t[3] or t[1].get("page_number", 0) != t[2]
+    ]
+    if not needs_change:
+        return 0
+
+    uid = uuid.uuid4().hex[:8]
+    tmp_paths: list[tuple[Path, dict, int, str]] = []
+    for entry, cfg_data, new_num, new_name in needs_change:
+        tmp_name = f"_normalize_tmp_{uid}_{entry.name}"
+        tmp_path = workspace / tmp_name
+        entry.rename(tmp_path)
+        tmp_paths.append((tmp_path, cfg_data, new_num, new_name))
+        logger.info(f"normalize phase-1: {entry.name} → {tmp_name}")
+
+    for tmp_path, cfg_data, new_num, new_name in tmp_paths:
+        final_path = workspace / new_name
+        tmp_path.rename(final_path)
+        cfg_path = final_path / "page_config.yaml"
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        data["page_number"] = new_num
+        if "photo_captions" not in data:
+            data["photo_captions"] = {}
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+        logger.info(f"normalize phase-2: → {new_name} (page_number={new_num})")
+
+    return len(needs_change)
+
+
 def delete_page(workspace: Path, page_folder: Path) -> dict:
     """Delete an entire page folder and immediately renumber subsequent pages.
 
@@ -165,6 +282,11 @@ def delete_page(workspace: Path, page_folder: Path) -> dict:
     import re
 
     try:
+        try:
+            normalize_page_numbers(workspace)
+        except Exception as e:
+            logger.warning(f"Pre-delete normalize failed (continuing): {e}")
+
         if not page_folder.exists():
             logger.error(f"Page folder not found: {page_folder}")
             return {"success": False, "last_in_section": False, "renumbered": 0}
@@ -178,6 +300,14 @@ def delete_page(workspace: Path, page_folder: Path) -> dict:
                 deleted_data = yaml.safe_load(f) or {}
             deleted_page_number = deleted_data.get("page_number")
             deleted_section_id = deleted_data.get("section_id", "") or ""
+
+        # Tombstone every photo that lived on this page so sync skips them.
+        # The page folder (including its manifest) is about to be wiped.
+        page_manifest = read_page_manifest(page_folder)
+        if page_manifest is not None:
+            for entry in page_manifest.photos.values():
+                if entry.source_path:
+                    add_tombstone(workspace, deleted_section_id, entry.source_path)
 
         # Delete the folder
         shutil.rmtree(page_folder)
@@ -250,17 +380,23 @@ def delete_page(workspace: Path, page_folder: Path) -> dict:
         return {"success": False, "last_in_section": False, "renumbered": 0}
 
 
-def reorder_pages(workspace: Path, ordered_page_ids: list[str]) -> dict:
+def reorder_pages(workspace: Path, ordered_page_ids: list[str], moved_page_id: str | None = None) -> dict:
     """Reorder content pages on disk based on the given ordering.
 
     Args:
         workspace: Workspace root.
         ordered_page_ids: New ordering of content page folder names, top-to-bottom.
             Must include ALL content pages (excluding portada/contraportada).
-            Order must respect section contiguity (validated server-side).
+            Any permutation is allowed (cross-section moves are permitted).
+        moved_page_id: If provided, this page is the one being explicitly moved.
+            When it crosses a section boundary, it adopts the section_id and
+            section_date of its preceding neighbor (or following if at position 0).
+            section_titles is never touched.
 
     Returns:
-        Dict with success (bool), error (str|None), renamed_pages (list of {old_id, new_id}).
+        Dict with success (bool), error (str|None), renamed_pages (list of {old_id,
+        new_id}), and optionally section_changed ({page_id, old_section_id,
+        new_section_id}) when a cross-section adoption occurred.
     """
     import re
     import uuid
@@ -295,21 +431,6 @@ def reorder_pages(workspace: Path, ordered_page_ids: list[str]) -> dict:
                 msg.append(f"Unknown pages: {extra}")
             return {"success": False, "error": "; ".join(msg), "renamed_pages": []}
 
-        # Validate section contiguity
-        seen_sections: dict[str, int] = {}  # section_id → last position seen
-        prev_section = None
-        for pos, page_id in enumerate(ordered_page_ids):
-            section_id = current_pages[page_id].get("section_id", "") or ""
-            if section_id != prev_section:
-                if section_id in seen_sections:
-                    return {
-                        "success": False,
-                        "error": "Cross-section reordering not allowed",
-                        "renamed_pages": [],
-                    }
-                seen_sections[section_id] = pos
-                prev_section = section_id
-
         # Determine starting page_number by finding minimum current page_number
         start_num = min(
             (d.get("page_number", 1) for d in current_pages.values()),
@@ -325,10 +446,44 @@ def reorder_pages(workspace: Path, ordered_page_ids: list[str]) -> dict:
             if current_pages[page_id].get("page_number") != new_numbers[page_id]
         ]
 
-        if not needs_rename:
+        # Determine cross-section adoption for the moved page (if any)
+        section_adoption: dict | None = None
+        adopt_section_id: str | None = None
+        adopt_section_date: str | None = None
+        if moved_page_id and moved_page_id in current_pages and len(ordered_page_ids) > 1:
+            moved_idx = ordered_page_ids.index(moved_page_id)
+            # Prefer preceding neighbor; fall back to following
+            neighbor_id = (
+                ordered_page_ids[moved_idx - 1] if moved_idx > 0
+                else ordered_page_ids[moved_idx + 1]
+            )
+            neighbor_cfg = current_pages.get(neighbor_id, {})
+            neighbor_section_id = neighbor_cfg.get("section_id", "")
+            moved_section_id = current_pages[moved_page_id].get("section_id", "")
+            if neighbor_section_id and neighbor_section_id != moved_section_id:
+                adopt_section_id = neighbor_section_id
+                adopt_section_date = neighbor_cfg.get("section_date", "")
+                section_adoption = {
+                    "page_id": moved_page_id,  # updated to new_id after rename
+                    "old_section_id": moved_section_id,
+                    "new_section_id": adopt_section_id,
+                }
+                logger.info(
+                    f"Cross-section adoption: {moved_page_id} "
+                    f"{moved_section_id!r} → {adopt_section_id!r}"
+                )
+
+        if not needs_rename and section_adoption is None:
             return {"success": True, "error": None, "renamed_pages": []}
 
         # Phase 1: rename affected folders to temporary names
+        # Include moved_page_id in needs_rename so its YAML gets updated even if
+        # its page_number didn't change (section adoption still needs a write).
+        needs_rename_set = set(needs_rename)
+        if section_adoption and moved_page_id and moved_page_id not in needs_rename_set:
+            needs_rename_set.add(moved_page_id)
+            needs_rename = list(needs_rename_set)
+
         tmp_mapping: dict[str, Path] = {}  # original page_id → tmp path
         uid = uuid.uuid4().hex[:8]
         for page_id in needs_rename:
@@ -359,12 +514,31 @@ def reorder_pages(workspace: Path, ordered_page_ids: list[str]) -> dict:
             data["page_number"] = new_num
             if "photo_captions" not in data:
                 data["photo_captions"] = {}
+
+            # Apply cross-section adoption if this is the moved page
+            if section_adoption and page_id == moved_page_id:
+                data["section_id"] = adopt_section_id
+                if adopt_section_date is not None:
+                    data["section_date"] = adopt_section_date
+
+                # Also update the manifest's section_id
+                manifest = read_page_manifest(new_path)
+                if manifest is not None:
+                    manifest.section_id = adopt_section_id
+                    write_page_manifest(manifest)
+
+                # Update the returned page_id in section_adoption to new name
+                section_adoption["page_id"] = new_folder_name
+
             with open(cfg_path, "w", encoding="utf-8") as f:
                 yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
 
             renamed_pages.append({"old_id": page_id, "new_id": new_folder_name})
 
-        return {"success": True, "error": None, "renamed_pages": renamed_pages}
+        result: dict = {"success": True, "error": None, "renamed_pages": renamed_pages}
+        if section_adoption:
+            result["section_changed"] = section_adoption
+        return result
 
     except Exception as e:
         logger.error(f"Failed to reorder pages: {e}")
@@ -451,6 +625,16 @@ def generate_preview(page_folder: Path, global_cfg: GlobalConfig) -> Path | None
             hero_photos=data.get("hero_photos", []),
         )
         
+        # Sweep stale preview PDFs left behind by reconciliation/rebalancing.
+        # Without this, a renumbered page can keep an old page_<old>.pdf next
+        # to the freshly-written page_<current>.pdf and the GET endpoint may
+        # serve the stale one.
+        for stale in page_folder.glob("page_*.pdf"):
+            try:
+                stale.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to delete stale preview {stale}: {e}")
+
         # Generate PDF
         output_path = generate_single_page_pdf(page_cfg, global_cfg)
         logger.info(f"Generated preview: {output_path}")
@@ -548,18 +732,120 @@ def create_page_after(workspace: Path, after_page_number: int) -> dict:
 
         logger.info(f"Created new page folder: {new_folder.name}")
 
+        normalize_page_numbers(workspace)
+
+        global_cfg_after = read_global_config(workspace)
+        pages_after = read_page_configs(workspace, global_cfg_after)
+        new_page_final = next(
+            (p for p in pages_after if p.page_number == after_page_number + 1),
+            None,
+        )
+        if new_page_final is None:
+            logger.error("Failed to locate newly created page after normalize")
+            return {}
+
         return {
-            'folder_name': new_folder.name,
-            'page_number': after_page_number,
+            'folder_name': new_page_final.folder.name,
+            'page_number': new_page_final.page_number,
             'photo_count': 0,
             'images': [],
-            'section_titles': list(ref_page.section_titles),
-            'layout_mode': ref_page.layout_mode,
+            'section_titles': list(new_page_final.section_titles),
+            'layout_mode': new_page_final.layout_mode,
         }
 
     except Exception as e:
         logger.error(f"Failed to create page: {e}")
         return {}
+
+
+def get_cover_info(workspace: Path, kind: str) -> dict:
+    """Return cover/backcover detail: folder, image filename, completed flag.
+
+    kind: 'cover' or 'backcover'. Returns empty dict if the folder does not exist.
+    """
+    folder_name = "portada" if kind == "cover" else "contraportada" if kind == "backcover" else None
+    if folder_name is None:
+        return {}
+    folder = workspace / folder_name
+    if not folder.is_dir():
+        return {}
+    images = sorted(
+        p.name for p in folder.iterdir()
+        if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
+    )
+    completed = False
+    cfg_path = folder / "page_config.yaml"
+    if cfg_path.exists():
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f) or {}
+        completed = bool(data.get('completed', False))
+    return {
+        'kind': kind,
+        'folder_name': folder_name,
+        'image': images[0] if images else "",
+        'images': images,
+        'completed': completed,
+    }
+
+
+def set_cover_photo(
+    workspace: Path,
+    kind: str,
+    source_page_folder: str,
+    source_image: str,
+) -> dict:
+    """Replace the cover or backcover image with a clone of a workspace photo.
+
+    The source page's photo is NOT moved — only its bytes are copied to the
+    cover folder. The existing cover file (if any) is unlinked.
+
+    Returns {'success': bool, 'image': new_image_name, 'error': str}.
+    """
+    folder_name = "portada" if kind == "cover" else "contraportada" if kind == "backcover" else None
+    if folder_name is None:
+        return {'success': False, 'error': f'Unknown cover kind: {kind}'}
+
+    cover_folder = workspace / folder_name
+    if not cover_folder.is_dir():
+        return {'success': False, 'error': f'Cover folder missing: {folder_name}'}
+
+    src_page = workspace / source_page_folder
+    src_photo = src_page / source_image
+    if not src_photo.is_file():
+        return {'success': False, 'error': f'Source photo not found: {source_image}'}
+
+    try:
+        # Drop existing cover images (the folder owns exactly one file).
+        for existing in cover_folder.iterdir():
+            if existing.is_file() and existing.suffix.lower() in VALID_IMAGE_EXTENSIONS:
+                existing.unlink()
+
+        ext = src_photo.suffix.lower()
+        if ext not in VALID_IMAGE_EXTENSIONS:
+            ext = ".jpg"
+        new_name = f"{'cover' if kind == 'cover' else 'backcover'}{ext}"
+        dst = cover_folder / new_name
+        shutil.copyfile(src_photo, dst)
+
+        # Refresh photo_count + ensure photo_captions exists in the cover YAML.
+        cfg_path = cover_folder / "page_config.yaml"
+        if cfg_path.exists():
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f) or {}
+            data['photo_count'] = 1
+            if 'photo_captions' not in data:
+                data['photo_captions'] = {}
+            with open(cfg_path, 'w', encoding='utf-8') as f:
+                yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+
+        logger.info(
+            f"Set {kind} photo: cloned {source_page_folder}/{source_image} → {folder_name}/{new_name}"
+        )
+        return {'success': True, 'image': new_name}
+
+    except Exception as e:
+        logger.error(f"Failed to set {kind} photo: {e}")
+        return {'success': False, 'error': str(e)}
 
 
 def get_page_info(page_folder: Path) -> dict:
@@ -605,12 +891,12 @@ def get_page_info(page_folder: Path) -> dict:
 
 def move_photos(from_folder: Path, to_folder: Path, filenames: list[str]) -> bool:
     """Move photos from one page to another, renaming as needed.
-    
+
     Args:
         from_folder: Source page folder
         to_folder: Destination page folder
         filenames: List of filenames to move
-        
+
     Returns:
         True if successful, False otherwise
     """
@@ -621,35 +907,51 @@ def move_photos(from_folder: Path, to_folder: Path, filenames: list[str]) -> boo
             if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTENSIONS
         )
         next_seq = len(existing_images) + 1
-        
+
         # Create temp directory for staging
         temp_dir = from_folder / "_move_tmp"
         temp_dir.mkdir(exist_ok=True)
-        
+
+        # Read destination section_id (manifests get it from there)
+        dst_section_id = ""
+        to_config_pre = to_folder / "page_config.yaml"
+        if to_config_pre.exists():
+            with open(to_config_pre, 'r', encoding='utf-8') as f:
+                dst_section_id = str((yaml.safe_load(f) or {}).get('section_id', '') or '')
+
         # Stage photos in temp folder with new names
         staged_files = []
+        rename_pairs: list[tuple[str, str]] = []  # (old_name, new_name)
         for filename in filenames:
             src = from_folder / filename
             if not src.exists():
                 logger.error(f"File not found: {filename}")
                 return False
-            
+
             ext = src.suffix.lower()
             if ext not in VALID_IMAGE_EXTENSIONS:
                 ext = ".jpg"
-            
+
             temp_name = f"img_{next_seq:03d}{ext}"
             dst_temp = temp_dir / temp_name
             shutil.move(str(src), str(dst_temp))
             staged_files.append((dst_temp, to_folder / temp_name))
+            rename_pairs.append((filename, temp_name))
             next_seq += 1
-        
+
         # Move from temp to final destination
         for src_temp, dst_final in staged_files:
             shutil.move(str(src_temp), str(dst_final))
-        
+
         # Clean up temp directory
         temp_dir.rmdir()
+
+        # Migrate manifest entries so source_path stays attached to the photo.
+        for old_name, new_name in rename_pairs:
+            move_photo_in_manifest(
+                from_folder, to_folder, old_name, new_name,
+                dst_section_id=dst_section_id or None,
+            )
         
         # Update photo counts in YAML for both pages
         from_config = from_folder / "page_config.yaml"
@@ -805,6 +1107,17 @@ def explode_page(workspace: Path, page_id: str) -> dict:
         new_data['photo_captions'] = {rename_map[p]: v for p, v in orig_captions.items() if p in moved_set}
         with open(new_config_path, 'w', encoding='utf-8') as f:
             yaml.dump(new_data, f, allow_unicode=True, default_flow_style=False)
+
+        # Migrate manifest entries for the photos that moved to the new page.
+        new_section_id = str(new_data.get('section_id', '') or orig_data.get('section_id', '') or '')
+        for old_name in move:
+            move_photo_in_manifest(
+                page_folder,
+                new_folder,
+                old_name,
+                rename_map[old_name],
+                dst_section_id=new_section_id or None,
+            )
 
         logger.info(f"Exploded {page_id}: {len(stay)} photos stay, {len(move)} moved to {new_folder.name}")
 
