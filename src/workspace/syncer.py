@@ -217,10 +217,17 @@ def _backfill_workspace_section_ids(
     workspace: Path,
     pages: list[PageConfig],
     source_root: Path,
+    persist: bool = True,
 ) -> bool:
     """If pages lack section_id but match a source group by title, fill it.
 
     Returns True if any page was updated.
+
+    When ``persist`` is True (the default), the recovered section_id is also
+    written back to page_config.yaml so the recovery survives across runs.
+    Earlier behaviour left the fix in memory only, which meant every sync had
+    to re-discover the same orphans (and any sort step that ran without the
+    backfill, e.g. resort_sections, still saw section_id='').
     """
     changed = False
     title_to_sid: dict[str, str] = {}
@@ -234,6 +241,7 @@ def _backfill_workspace_section_ids(
             sid, _ = _ensure_source_section_id(source_root, group_dir.name)
             title_to_sid[title] = sid
 
+    recovered: list[PageConfig] = []
     for p in pages:
         if p.is_cover or p.is_backcover or p.section_id:
             continue
@@ -241,7 +249,14 @@ def _backfill_workspace_section_ids(
         sid = title_to_sid.get(title)
         if sid:
             p.section_id = sid
+            recovered.append(p)
             changed = True
+
+    if changed and persist and recovered:
+        try:
+            write_page_configs(recovered)
+        except Exception as exc:
+            logger.warning(f"Failed persisting recovered section_ids: {exc}")
     return changed
 
 
@@ -853,7 +868,15 @@ def _reorder_pages_chronologically(workspace: Path, source_root: Path) -> None:
         group = sid_to_group.get(p.section_id, "")
         if group:
             return (1, _section_chronological_key(group), p.page_number)
-        return (2, p.section_titles[0] if p.section_titles else "", p.page_number)
+        # Orphan page (section_id still unresolved after backfill). Use the
+        # date prefix of section_titles[0] so it interleaves chronologically
+        # with the rest instead of being dumped at the end of the album.
+        title = p.section_titles[0] if p.section_titles else ""
+        m = re.match(r"^(\d{2})/(\d{2})/(\d{4})\b", title)
+        if m:
+            date_int = int(f"{m.group(3)}{m.group(2)}{m.group(1)}")
+            return (1, (date_int, title), p.page_number)
+        return (2, (0, title), p.page_number)
 
     pages.sort(key=section_key)
 

@@ -16,7 +16,81 @@ from pathlib import Path
 
 import yaml
 
+from src.utils.naming import build_section_title
+
 logger = logging.getLogger("album.resort")
+
+
+def _backfill_empty_section_ids(workspace: Path, source_root: Path | None) -> int:
+    """Recover section_id for pages where page_config.yaml has it empty.
+
+    Strategy: cross-reference section_titles[0] against the canonical title
+    built from each source folder name (build_section_title). When a match is
+    found, copy section_id from the source's .album_meta.yaml into the page's
+    page_config.yaml. Returns number of pages fixed.
+
+    Idempotent: pages that already have a section_id are skipped. Pages whose
+    title cannot be matched (or whose source folder lacks .album_meta.yaml)
+    are left untouched — resort_sections mints a synthetic per-page sid for
+    those so they don't collapse into a single super-group.
+    """
+    if source_root is None or not source_root.is_dir():
+        return 0
+
+    title_to_sid: dict[str, str] = {}
+    for d in source_root.iterdir():
+        if not d.is_dir():
+            continue
+        if d.name.lower() in ("portada", "contraportada"):
+            continue
+        meta_path = d / ".album_meta.yaml"
+        if not meta_path.exists():
+            continue
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = yaml.safe_load(f) or {}
+        except Exception:
+            continue
+        sid = str((meta or {}).get("section_id", "") or "")
+        if not sid:
+            continue
+        title = build_section_title(d.name)
+        if title and title not in title_to_sid:
+            title_to_sid[title] = sid
+
+    if not title_to_sid:
+        return 0
+
+    fixed = 0
+    for entry in workspace.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("pagina_"):
+            continue
+        cfg_path = entry / "page_config.yaml"
+        if not cfg_path.exists():
+            continue
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                cfg_data = yaml.safe_load(f) or {}
+        except Exception:
+            continue
+        if cfg_data.get("is_cover") or cfg_data.get("is_backcover"):
+            continue
+        if str(cfg_data.get("section_id", "") or ""):
+            continue
+        titles = list(cfg_data.get("section_titles", []) or [])
+        if not titles:
+            continue
+        sid = title_to_sid.get(titles[0])
+        if not sid:
+            continue
+        cfg_data["section_id"] = sid
+        try:
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg_data, f, allow_unicode=True, default_flow_style=False)
+            fixed += 1
+        except Exception as exc:
+            logger.warning(f"Failed persisting section_id for {entry.name}: {exc}")
+    return fixed
 
 
 def _parse_dd_mm_yyyy(date_str: str) -> tuple[int, int, int] | None:
@@ -127,6 +201,14 @@ def resort_sections(workspace: Path, source_root: Path | None = None) -> dict:
     folder_pattern = re.compile(r"^pagina_(\d+)_(.+)$")
 
     try:
+        # ── 0. Recover empty section_id from source .album_meta.yaml ─────────
+        # Pages created by "Explotar página en dos" before the fix landed have
+        # section_id=''. Without this recovery, every such page would collapse
+        # into the same "" super-group below, defeating the resort entirely.
+        recovered = _backfill_empty_section_ids(workspace, source_root)
+        if recovered:
+            logger.info(f"Recovered section_id for {recovered} orphan pages")
+
         # ── 1. Collect all content pages ────────────────────────────────────
         entries: list[tuple[Path, dict]] = []
         for entry in workspace.iterdir():
@@ -148,11 +230,16 @@ def resort_sections(workspace: Path, source_root: Path | None = None) -> dict:
         entries.sort(key=lambda x: (x[1].get("page_number", 0), x[0].name))
 
         # ── 2. Group pages by section_id, preserving intra-section order ────
-        # section_id → list of (entry_path, cfg_data) in page order
+        # section_id → list of (entry_path, cfg_data) in page order.
+        # For pages still missing a section_id, mint a synthetic per-page sid
+        # so each orphan stays its own one-page "section" instead of getting
+        # collapsed into a single "" super-group that the sort cannot break up.
         from collections import OrderedDict
         sections: OrderedDict[str, list[tuple[Path, dict]]] = OrderedDict()
         for entry, cfg_data in entries:
             sid = str(cfg_data.get("section_id", "") or "")
+            if not sid:
+                sid = f"__orphan__{entry.name}"
             if sid not in sections:
                 sections[sid] = []
             sections[sid].append((entry, cfg_data))

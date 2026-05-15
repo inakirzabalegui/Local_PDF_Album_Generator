@@ -727,6 +727,8 @@ def create_page_after(workspace: Path, after_page_number: int) -> dict:
             layout_seed=_random.randint(0, 2**31),
             section_titles=list(ref_page.section_titles),
             layout_mode=ref_page.layout_mode,
+            section_id=ref_page.section_id,
+            sub_group_ids=list(ref_page.sub_group_ids),
         )
         write_page_configs([new_page])
 
@@ -931,6 +933,13 @@ def move_photos(from_folder: Path, to_folder: Path, filenames: list[str]) -> boo
             ext = src.suffix.lower()
             if ext not in VALID_IMAGE_EXTENSIONS:
                 ext = ".jpg"
+
+            # Avanzar next_seq hasta encontrar un nombre libre en el destino.
+            # Defiende contra huecos en la numeración tras delete_photo, que
+            # provocarían que `shutil.move` sobrescribiera silenciosamente una
+            # foto existente con el mismo nombre.
+            while (to_folder / f"img_{next_seq:03d}{ext}").exists():
+                next_seq += 1
 
             temp_name = f"img_{next_seq:03d}{ext}"
             dst_temp = temp_dir / temp_name
