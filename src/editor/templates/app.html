@@ -332,7 +332,7 @@
                                 <li data-i18n="help.flow_2">Revisa los eventos en <strong>Fuente</strong>: renombra y borra lo que no quieras</li>
                                 <li data-i18n="help.flow_3">Pulsa <kbd>🔄 Regenerar Álbum</kbd> para crear el workspace de páginas</li>
                                 <li data-i18n="help.flow_4">Cambia a <strong>Edición</strong> para ajustar fotos, títulos y layouts</li>
-                                <li data-i18n="help.flow_5">Guarda con <kbd>Cmd/Ctrl+S</kbd> y exporta el PDF desde la línea de comandos</li>
+                                <li data-i18n="help.flow_5">Los cambios se guardan automáticamente; exporta el PDF desde la línea de comandos</li>
                             </ol>
                         </div>
 
@@ -379,14 +379,29 @@
                                         <td data-i18n="help.scope_edition">Edición</td>
                                     </tr>
                                     <tr>
-                                        <td><kbd>S</kbd></td>
+                                        <td><kbd>A</kbd></td>
                                         <td data-i18n="help.key_shuffle">Reordenar aleatoriamente las fotos de la página</td>
+                                        <td data-i18n="help.scope_edition">Edición</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>L</kbd> / <kbd>Shift</kbd>+<kbd>L</kbd></td>
+                                        <td data-i18n="help.key_layout">Cambiar al siguiente modo de layout (Shift+L: anterior)</td>
+                                        <td data-i18n="help.scope_edition">Edición</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>E</kbd></td>
+                                        <td data-i18n="help.key_explode">Explotar página en dos (útil si hay demasiadas fotos)</td>
                                         <td data-i18n="help.scope_edition">Edición</td>
                                     </tr>
                                     <tr>
                                         <td><kbd>↑</kbd> / <kbd>↓</kbd></td>
                                         <td data-i18n="help.key_nav_ud">Navegar fotos o panel</td>
                                         <td data-i18n="help.scope_both">Fuente · Edición</td>
+                                    </tr>
+                                    <tr>
+                                        <td><kbd>Cmd/Ctrl</kbd>+<kbd>↑</kbd> / <kbd>↓</kbd></td>
+                                        <td data-i18n="help.key_nav_state">Saltar al siguiente cambio de estado en el panel (completadas/pendientes)</td>
+                                        <td data-i18n="help.scope_edition">Edición</td>
                                     </tr>
                                     <tr>
                                         <td><kbd>←</kbd></td>
@@ -418,7 +433,7 @@
                                 <h4 class="help-section-title" data-i18n="help.section_edition_actions">Acciones en Edición</h4>
                                 <ul class="help-actions-list">
                                     <li data-i18n="help.action_layout">🎨 <strong>Modo Layout</strong> — elige entre Mesa de Luz, Grid Compacto o Híbrido</li>
-                                    <li data-i18n="help.action_shuffle">🎲 <strong>Aleatorio</strong> — reordena visualmente las fotos con una nueva semilla de layout (tecla S)</li>
+                                    <li data-i18n="help.action_shuffle">🎲 <strong>Aleatorio</strong> — reordena visualmente las fotos con una nueva semilla de layout (tecla A)</li>
                                     <li data-i18n="help.action_explode">💥 <strong>Explotar Página</strong> — divide la página en dos (útil si hay demasiadas fotos)</li>
                                     <li data-i18n="help.action_delete_page">🗑️ <strong>Borrar Página</strong> — elimina la página completa</li>
                                     <li data-i18n="help.action_delete_photo">🗑️ <strong>Borrar Foto</strong> — elimina la foto seleccionada de la página</li>

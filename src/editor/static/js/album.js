@@ -15,6 +15,25 @@ let draggingAlbumFilenames = [];
 // Set to true when a cross-page drop is handled so onEnd skips reorder
 let _crossPageDropHandled = false;
 
+// Layout cycling (L / Shift+L). Order mirrors the layout-mode modal.
+const LAYOUT_MODE_ORDER = [
+    'mesa_de_luz',
+    'grid_compacto',
+    'hibrido',
+    'cuadricula_uniforme',
+    'cuadricula_compacta',
+    'cuadricula_maximizada',
+];
+const LAYOUT_MODE_LABEL_KEYS = {
+    'mesa_de_luz': 'album.layout_mesa',
+    'grid_compacto': 'album.layout_grid',
+    'hibrido': 'album.layout_hibrido',
+    'cuadricula_uniforme': 'album.layout_cuadricula_uniforme',
+    'cuadricula_compacta': 'album.layout_cuadricula_compacta',
+    'cuadricula_maximizada': 'album.layout_cuadricula_maximizada',
+};
+let isLayoutCycling = false;
+
 // Page panel state (panel is always visible now; kept flags for keyboard nav)
 let pagePanelOpen = true;
 let pagePanelFocused = false;
@@ -292,6 +311,9 @@ function handleAlbumKeyboard(e) {
         } else if (e.key === 'e' || e.key === 'E') {
             e.preventDefault();
             explodePage();
+        } else if ((e.key === 'l' || e.key === 'L') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+            cycleLayoutMode(e.shiftKey ? -1 : 1);
         } else if (e.key === 'c' || e.key === 'C') {
             e.preventDefault();
             togglePageCompleted();
@@ -727,6 +749,28 @@ async function applyLayoutModeFromModal() {
     closeLayoutModeModal();
     if (newMode === currentPageLayoutMode) return;
     await updateLayoutMode(newMode);
+}
+
+// Cycle through LAYOUT_MODE_ORDER (1 = forward, -1 = backward). Ignored while
+// a previous cycle is still in flight to avoid overlapping fetches.
+async function cycleLayoutMode(direction) {
+    if (isLayoutCycling) return;
+    if (!PAGES_DATA || PAGES_DATA.length === 0) return;
+
+    const currentIdx = LAYOUT_MODE_ORDER.indexOf(currentPageLayoutMode);
+    const startIdx = currentIdx === -1 ? 0 : currentIdx;
+    const len = LAYOUT_MODE_ORDER.length;
+    const nextIdx = ((startIdx + direction) % len + len) % len;
+    const nextMode = LAYOUT_MODE_ORDER[nextIdx];
+
+    isLayoutCycling = true;
+    try {
+        const labelKey = LAYOUT_MODE_LABEL_KEYS[nextMode] || nextMode;
+        showToast(t('toast.layout_mode') + t(labelKey), { type: 'info', duration: 1800 });
+        await updateLayoutMode(nextMode);
+    } finally {
+        isLayoutCycling = false;
+    }
 }
 
 async function updateLayoutMode(newMode) {
@@ -1262,6 +1306,10 @@ function initPagePanel() {
         pageList.appendChild(buildCoverPanelItem(COVER_DATA, 'cover'));
     }
 
+    if (typeof BACKCOVER_DATA !== 'undefined' && BACKCOVER_DATA) {
+        pageList.appendChild(buildCoverPanelItem(BACKCOVER_DATA, 'backcover'));
+    }
+
     PAGES_DATA.forEach((page, index) => {
         const item = document.createElement('div');
         item.className = 'page-list-item';
@@ -1325,10 +1373,6 @@ function initPagePanel() {
 
         pageList.appendChild(item);
     });
-
-    if (typeof BACKCOVER_DATA !== 'undefined' && BACKCOVER_DATA) {
-        pageList.appendChild(buildCoverPanelItem(BACKCOVER_DATA, 'backcover'));
-    }
 
     // Page drag-and-drop disabled — plan 2026-05-13. Use "↕️ Mover a página" button instead.
     // To re-enable: uncomment the block below and remove the `if (false)` wrapper.
