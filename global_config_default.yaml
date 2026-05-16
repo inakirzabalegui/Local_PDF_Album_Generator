@@ -6,10 +6,10 @@
 # Print provider
 # ─────────────────────────────────────────────────────────────────────────────
 # Definitions live in src/printing/data/<provider>.yaml.
-# Available providers: blurb, peecho (legacy A4), custom.
+# Available providers: peecho (A4), blurb, custom.
 provider:
-  name: blurb
-  product: standard_portrait_hardcover_dust_jacket
+  name: peecho
+  product: a4
   paper_variant: standard
 
 # ─────────────────────────────────────────────────────────────────────────────

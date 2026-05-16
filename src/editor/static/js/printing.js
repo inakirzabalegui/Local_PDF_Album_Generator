@@ -10,8 +10,39 @@ const PRINTING_STATE = {
     config: null,
     pageCount: 0,
     overrides: { page: {}, cover: {}, rendering: {} },
-    provider: { name: 'blurb', product: '', paper_variant: '' },
+    provider: { name: 'peecho', product: 'a4', paper_variant: 'standard' },
 };
+
+function getCurrentPrintingPayload() {
+    return {
+        provider: { ...PRINTING_STATE.provider },
+        overrides: JSON.parse(JSON.stringify(PRINTING_STATE.overrides || {})),
+    };
+}
+
+function resetCreatePdfModalToConfigMode() {
+    const cfgBody = document.getElementById('create-pdf-config-body');
+    const cfgFooter = document.getElementById('create-pdf-config-footer');
+    const progBody = document.getElementById('create-pdf-progress-body');
+    const progFooter = document.getElementById('create-pdf-progress-footer');
+    if (cfgBody) cfgBody.style.display = '';
+    if (cfgFooter) cfgFooter.style.display = '';
+    if (progBody) progBody.style.display = 'none';
+    if (progFooter) progFooter.style.display = 'none';
+
+    const submitBtn = document.getElementById('create-pdf-submit-btn');
+    if (submitBtn) submitBtn.disabled = false;
+    const closeBtn = document.getElementById('create-pdf-close-btn');
+    if (closeBtn) closeBtn.disabled = true;
+
+    const stepEl = document.getElementById('create-pdf-progress-step');
+    if (stepEl) stepEl.textContent = 'Iniciando…';
+    const outputs = document.getElementById('create-pdf-progress-outputs');
+    if (outputs) while (outputs.firstChild) outputs.removeChild(outputs.firstChild);
+
+    const status = document.getElementById('printing-status');
+    if (status) status.textContent = '';
+}
 
 const PAGE_FIELDS = [
     ['trim_w_cm', 'Página trim ancho'],
@@ -57,9 +88,11 @@ function el(tag, attrs, ...children) {
     return node;
 }
 
-async function openPrintingDialog() {
-    const dialog = document.getElementById('printing-dialog');
-    const body = document.getElementById('printing-dialog-body');
+async function openCreatePdfDialog() {
+    const dialog = document.getElementById('create-pdf-modal');
+    const body = document.getElementById('create-pdf-config-body');
+    if (!dialog || !body) return;
+    resetCreatePdfModalToConfigMode();
     body.replaceChildren(el('p', { class: 'printing-loading' }, 'Cargando…'));
     dialog.classList.remove('hidden');
 
@@ -81,8 +114,12 @@ async function openPrintingDialog() {
     }
 }
 
-function closePrintingDialog() {
-    document.getElementById('printing-dialog').classList.add('hidden');
+function closeCreatePdfDialog() {
+    const dialog = document.getElementById('create-pdf-modal');
+    if (!dialog) return;
+    dialog.classList.add('hidden');
+    // Reset to config mode so next open starts clean.
+    resetCreatePdfModalToConfigMode();
 }
 
 async function ensureProductsLoaded(name) {
@@ -94,7 +131,7 @@ async function ensureProductsLoaded(name) {
 }
 
 function renderPrintingDialog() {
-    const body = document.getElementById('printing-dialog-body');
+    const body = document.getElementById('create-pdf-config-body');
     const products = PRINTING_STATE.productsByProvider[PRINTING_STATE.provider.name] || [];
     const currentProduct = products.find(p => p.id === PRINTING_STATE.provider.product) || products[0];
     if (currentProduct && PRINTING_STATE.provider.product !== currentProduct.id) {
@@ -379,37 +416,6 @@ function updateFieldValue(group, key, value) {
 function resetPrintingOverrides() {
     PRINTING_STATE.overrides = { page: {}, cover: {}, rendering: { binding_side_for_odd: 'left' } };
     renderPrintingDialog();
-}
-
-async function savePrintingConfig() {
-    const btn = document.getElementById('printing-save-btn');
-    btn.disabled = true;
-    const status = document.getElementById('printing-status');
-    if (status) status.textContent = 'Guardando…';
-    try {
-        const r = await fetch('/api/config/global', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                provider: PRINTING_STATE.provider,
-                overrides: PRINTING_STATE.overrides,
-            }),
-        });
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.error || 'save failed');
-        if (status) status.textContent = 'Guardado.';
-        if (typeof showToast === 'function') {
-            showToast('Configuración de impresión guardada', { type: 'success' });
-        }
-        setTimeout(closePrintingDialog, 400);
-    } catch (err) {
-        if (status) status.textContent = `Error: ${err.message}`;
-        if (typeof showToast === 'function') {
-            showToast(`Error al guardar: ${err.message}`, { type: 'error' });
-        }
-    } finally {
-        btn.disabled = false;
-    }
 }
 
 function trimNum(v) {

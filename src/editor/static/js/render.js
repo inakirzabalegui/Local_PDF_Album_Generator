@@ -1,24 +1,56 @@
-// Render album PDF from the web UI with SSE progress.
+// Crear PDF flow: opens the unified create-pdf-modal in config mode; on submit
+// persists provider+overrides to /api/config/global and then streams render
+// progress via SSE inside the same modal.
 
 (function () {
     let _renderInProgress = false;
 
     function init() {
         const btn = document.getElementById('render-album-header-btn');
-        if (btn) btn.addEventListener('click', renderAlbum);
+        if (btn) btn.addEventListener('click', () => {
+            if (_renderInProgress) {
+                showToast('Render ya en curso.', { type: 'warning' });
+                return;
+            }
+            if (typeof openCreatePdfDialog === 'function') openCreatePdfDialog();
+        });
     }
 
-    async function renderAlbum() {
-        if (_renderInProgress) {
-            showToast('Render ya en curso.', { type: 'warning' });
+    // Called by the modal's "Crear" button (onclick="submitCreatePdf()").
+    window.submitCreatePdf = async function submitCreatePdf() {
+        if (_renderInProgress) return;
+
+        if (typeof getCurrentPrintingPayload !== 'function') {
+            showToast('Configuración de impresión no inicializada.', { type: 'error' });
             return;
         }
+        const payload = getCurrentPrintingPayload();
+
+        const submitBtn = document.getElementById('create-pdf-submit-btn');
+        const status = document.getElementById('printing-status');
+        if (submitBtn) submitBtn.disabled = true;
+        if (status) status.textContent = 'Guardando…';
+
+        // 1) Persist provider + overrides to disk. Backend reads from disk for the render.
+        try {
+            const r = await fetch('/api/config/global', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const data = await r.json();
+            if (!r.ok) throw new Error(data.error || 'save failed');
+        } catch (err) {
+            if (status) status.textContent = `Error: ${err.message}`;
+            if (submitBtn) submitBtn.disabled = false;
+            showToast(`Error al guardar configuración: ${err.message}`, { type: 'error' });
+            return;
+        }
+        if (status) status.textContent = '';
+
+        // 2) Switch modal to progress mode and start SSE render.
+        switchToProgressMode();
         _renderInProgress = true;
-
-        const btn = document.getElementById('render-album-header-btn');
-        if (btn) btn.disabled = true;
-
-        showRenderModal();
         setStep('Iniciando render…');
 
         try {
@@ -54,12 +86,11 @@
         } catch (e) {
             setStep('Error: ' + e.message);
             showToast('Error en render: ' + e.message, { type: 'error' });
-            setTimeout(hideRenderModal, 3000);
+            enableCloseButton();
         } finally {
             _renderInProgress = false;
-            if (btn) btn.disabled = false;
         }
-    }
+    };
 
     function handleEvent(event) {
         if (event.step === 'reading') setStep('Leyendo workspace…');
@@ -67,17 +98,18 @@
         else if (event.step === 'rebalancing') setStep('Rebalanceando páginas…');
         else if (event.step === 'rendering') setStep(`Renderizando PDF (${event.total} pág)…`);
         else if (event.step === 'done') {
-            setStep('✓ Render completado');
+            setStep('✓ PDF creado');
             renderOutputs(event.outputs || []);
+            enableCloseButton();
         } else if (event.step === 'error') {
             setStep('Error: ' + (event.message || 'desconocido'));
             showToast('Error en render: ' + (event.message || ''), { type: 'error' });
-            setTimeout(hideRenderModal, 4000);
+            enableCloseButton();
         }
     }
 
     function renderOutputs(outputs) {
-        const list = document.getElementById('render-modal-outputs');
+        const list = document.getElementById('create-pdf-progress-outputs');
         if (!list) return;
         while (list.firstChild) list.removeChild(list.firstChild);
         if (!outputs.length) {
@@ -97,83 +129,23 @@
             a.textContent = (o.is_cover ? '📕 ' : '📄 ') + o.name;
             list.appendChild(a);
         }
-        const closeBtn = document.getElementById('render-modal-close-btn');
-        if (closeBtn) closeBtn.disabled = false;
     }
 
     function setStep(text) {
-        const el = document.getElementById('render-modal-step');
+        const el = document.getElementById('create-pdf-progress-step');
         if (el) el.textContent = text;
     }
 
-    function showRenderModal() {
-        let modal = document.getElementById('render-modal');
-        if (!modal) {
-            modal = buildModal();
-            document.body.appendChild(modal);
-        }
-        const closeBtn = modal.querySelector('#render-modal-close-btn');
-        if (closeBtn) closeBtn.disabled = true;
-        const list = modal.querySelector('#render-modal-outputs');
-        if (list) {
-            while (list.firstChild) list.removeChild(list.firstChild);
-        }
-        modal.classList.remove('hidden');
-        modal.style.display = 'flex';
+    function switchToProgressMode() {
+        document.getElementById('create-pdf-config-body').style.display = 'none';
+        document.getElementById('create-pdf-config-footer').style.display = 'none';
+        document.getElementById('create-pdf-progress-body').style.display = '';
+        document.getElementById('create-pdf-progress-footer').style.display = '';
     }
 
-    function buildModal() {
-        const modal = document.createElement('div');
-        modal.id = 'render-modal';
-        modal.className = 'modal';
-        modal.setAttribute('role', 'dialog');
-
-        const content = document.createElement('div');
-        content.className = 'modal-content';
-        content.style.maxWidth = '520px';
-
-        const header = document.createElement('header');
-        header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--color-border, #ddd);';
-
-        const title = document.createElement('h2');
-        title.style.cssText = 'margin:0;font-size:1.1rem;';
-        title.textContent = '🖨️ Generando PDF';
-        header.appendChild(title);
-
-        const closeBtn = document.createElement('button');
-        closeBtn.id = 'render-modal-close-btn';
-        closeBtn.className = 'btn btn-secondary';
-        closeBtn.disabled = true;
-        closeBtn.setAttribute('aria-label', 'Cerrar');
-        closeBtn.textContent = '✕';
-        closeBtn.addEventListener('click', hideRenderModal);
-        header.appendChild(closeBtn);
-
-        const body = document.createElement('div');
-        body.style.padding = '20px';
-
-        const stepEl = document.createElement('p');
-        stepEl.id = 'render-modal-step';
-        stepEl.style.margin = '0 0 14px 0';
-        stepEl.textContent = 'Iniciando…';
-        body.appendChild(stepEl);
-
-        const list = document.createElement('div');
-        list.id = 'render-modal-outputs';
-        list.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
-        body.appendChild(list);
-
-        content.appendChild(header);
-        content.appendChild(body);
-        modal.appendChild(content);
-        return modal;
-    }
-
-    function hideRenderModal() {
-        const modal = document.getElementById('render-modal');
-        if (!modal) return;
-        modal.classList.add('hidden');
-        modal.style.display = 'none';
+    function enableCloseButton() {
+        const btn = document.getElementById('create-pdf-close-btn');
+        if (btn) btn.disabled = false;
     }
 
     if (document.readyState === 'loading') {

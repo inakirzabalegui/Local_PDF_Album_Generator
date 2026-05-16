@@ -143,7 +143,7 @@ def api_put_global_config():
 
     # Validate the chosen provider/product/paper_variant exists.
     try:
-        provider = load_provider(provider_data.get("name", "blurb"))
+        provider = load_provider(provider_data.get("name", "peecho"))
         product = provider_data.get("product")
         variants = next((d for d in provider.list_products() if d.id == product), None)
         if variants is None:

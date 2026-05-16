@@ -88,8 +88,8 @@ class ProductDescriptor:
 class ProviderConfig:
     """User-side selection of provider + product + paper variant."""
 
-    name: str = "blurb"
-    product: str = "standard_portrait_hardcover_dust_jacket"
+    name: str = "peecho"
+    product: str = "a4"
     paper_variant: str = "standard"
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,8 +98,8 @@ class ProviderConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProviderConfig":
         return cls(
-            name=data.get("name", "blurb"),
-            product=data.get("product", "standard_portrait_hardcover_dust_jacket"),
+            name=data.get("name", "peecho"),
+            product=data.get("product", "a4"),
             paper_variant=data.get("paper_variant", "standard"),
         )
 

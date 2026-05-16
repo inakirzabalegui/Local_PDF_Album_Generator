@@ -34,6 +34,15 @@ const LAYOUT_MODE_LABEL_KEYS = {
 };
 let isLayoutCycling = false;
 
+// Page Show (fullscreen PDF viewer) state — tecla S
+let _showViewerIndex = 0;
+let _showViewerRenderTask = null;
+let _showViewerPdf = null;
+
+// Photo Viewer origin — null when opened normally, 'show' when entered from Show
+// (used to decide whether to re-open Show after deleting the last photo).
+let _vEntryOrigin = null;
+
 // Page panel state (panel is always visible now; kept flags for keyboard nav)
 let pagePanelOpen = true;
 let pagePanelFocused = false;
@@ -227,9 +236,10 @@ function handleAlbumKeyboard(e) {
     const viewerEl = document.getElementById('photo-viewer-modal');
     if (viewerEl && !viewerEl.classList.contains('hidden')) {
         if (e.key === 'Escape') { e.preventDefault(); closePhotoViewer(); }
-        else if (e.key === 'ArrowUp') { e.preventDefault(); navigatePhotoViewer(-1); }
-        else if (e.key === 'ArrowDown') { e.preventDefault(); navigatePhotoViewer(1); }
+        else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); navigatePhotoViewer(-1); }
+        else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); navigatePhotoViewer(1); }
         else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); closePhotoViewer(); }
+        else if (e.key === 's' || e.key === 'S') { e.preventDefault(); openPageViewerFromV(); }
         else if (e.key === 'd' || e.key === 'D') {
             e.preventDefault();
             if (selectedPhotoName) {
@@ -240,10 +250,18 @@ function handleAlbumKeyboard(e) {
                 const viewerImg = document.getElementById('photo-viewer-img');
                 const viewerContent = viewerImg ? viewerImg.closest('.photo-viewer-content') : null;
                 const itemEl = items[currentIdx] || null;
+                const wasFromShow = (_vEntryOrigin === 'show');
                 playDeleteFeedback({ viewerEl: viewerContent, itemEl }).then(() => {
                     deletePhotoByName(filenameToDelete).then(() => {
                         if (remaining <= 0) {
-                            closePhotoViewer();
+                            // Deleted last photo on this page
+                            if (wasFromShow) {
+                                // Return to Show with the now-empty page
+                                closePhotoViewer();
+                                openPageViewer(currentPageIndex);
+                            } else {
+                                closePhotoViewer();
+                            }
                         } else {
                             const newItems = Array.from(document.querySelectorAll('#photo-list .photo-item'));
                             if (newItems.length > 0) {
@@ -256,6 +274,20 @@ function handleAlbumKeyboard(e) {
                     });
                 });
             }
+        }
+        return;
+    }
+
+    // Page Show viewer (tecla S) has its own navigation keys
+    const showModal = document.getElementById('page-show-modal');
+    if (showModal && !showModal.classList.contains('hidden')) {
+        if (e.key === 'Escape' || e.key === 's' || e.key === 'S') { e.preventDefault(); closePageViewer(); }
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); navigatePageViewer(-1); }
+        else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); navigatePageViewer(1); }
+        else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); openPhotoViewerFromShow(); }
+        else if ((e.key === 'l' || e.key === 'L') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+            _cycleLayoutFromShow(e.shiftKey ? -1 : 1);
         }
         return;
     }
@@ -305,6 +337,10 @@ function handleAlbumKeyboard(e) {
                 e.preventDefault();
                 openPhotoViewer(selectedPhotoName);
             }
+        } else if (e.key === 's' || e.key === 'S') {
+            e.preventDefault();
+            const startIdx = _resolveShowStartIndex();
+            if (startIdx !== null) openPageViewer(startIdx);
         } else if (e.key === 'a' || e.key === 'A') {
             e.preventDefault();
             shuffleLayout();
@@ -847,6 +883,9 @@ function openPhotoViewer(filename) {
     if (caption) caption.textContent = filename;
     modal.classList.remove('hidden');
 
+    const navHint = document.getElementById('photo-viewer-nav-hint');
+    if (navHint) navHint.textContent = t('photo_viewer.nav_hint');
+
     const el = document.querySelector(
         `#photo-list .photo-item[data-filename="${CSS.escape(filename)}"]`
     );
@@ -860,6 +899,51 @@ function closePhotoViewer() {
     if (modal) modal.classList.add('hidden');
     const img = document.getElementById('photo-viewer-img');
     if (img) img.src = '';
+    _vEntryOrigin = null;
+}
+
+// Open V from inside Show: syncs the current page first so deletions target
+// the right page, then opens V on the first photo of that page.
+async function openPhotoViewerFromShow() {
+    const pageIdx = _showViewerIndex;
+    if (!PAGES_DATA || pageIdx < 0 || pageIdx >= PAGES_DATA.length) return;
+
+    // Close Show without triggering the panel-sync side effect we'd normally want;
+    // we'll re-open it later via S, and currentPageIndex is about to be set anyway.
+    const showModal = document.getElementById('page-show-modal');
+    if (showModal) showModal.classList.add('hidden');
+    if (_showViewerRenderTask) {
+        try { _showViewerRenderTask.cancel(); } catch (_) { /* noop */ }
+        _showViewerRenderTask = null;
+    }
+    _showViewerPdf = null;
+
+    // Sync the album view so #photo-list contains this page's photos.
+    await loadPage(pageIdx);
+
+    // Pick the first photo from the now-rendered photo list.
+    const firstItem = document.querySelector('#photo-list .photo-item');
+    if (!firstItem) {
+        console.warn('[PhotoViewer] Page has no photos to view.');
+        return;
+    }
+    const firstName = firstItem.dataset.filename;
+    _vEntryOrigin = 'show';
+    openPhotoViewer(firstName);
+}
+
+// Open Show from inside V: closes V and re-opens Show on currentPageIndex
+// with a fresh preview PDF (cache-busted by _renderShowPage).
+function openPageViewerFromV() {
+    const modal = document.getElementById('photo-viewer-modal');
+    if (modal) modal.classList.add('hidden');
+    const img = document.getElementById('photo-viewer-img');
+    if (img) img.src = '';
+    _vEntryOrigin = null;
+
+    if (!PAGES_DATA || PAGES_DATA.length === 0) return;
+    const idx = Math.max(0, Math.min(currentPageIndex, PAGES_DATA.length - 1));
+    openPageViewer(idx);
 }
 
 function handlePhotoViewerOverlayClick(e) {
@@ -875,6 +959,189 @@ function navigatePhotoViewer(delta) {
     const newIdx = ((startIdx + delta) % n + n) % n;
     const newFilename = items[newIdx].dataset.filename;
     if (newFilename) openPhotoViewer(newFilename);
+}
+
+// ── Page Show Viewer (tecla S) ────────────────────────────────────────────
+
+/** Resolve the starting index into PAGES_DATA for the Show viewer.
+ *  Returns null (and warns) when there are no content pages. */
+function _resolveShowStartIndex() {
+    if (!PAGES_DATA || PAGES_DATA.length === 0) {
+        console.warn('[PageShow] No hay páginas de contenido disponibles.');
+        return null;
+    }
+    if (currentCoverKind === 'cover') return 0;
+    if (currentCoverKind === 'backcover') return PAGES_DATA.length - 1;
+    return Math.max(0, Math.min(currentPageIndex, PAGES_DATA.length - 1));
+}
+
+async function openPageViewer(pageIndex) {
+    if (!PAGES_DATA || PAGES_DATA.length === 0) return;
+    const modal = document.getElementById('page-show-modal');
+    if (!modal) return;
+
+    _showViewerIndex = pageIndex;
+    modal.classList.remove('hidden');
+
+    const navHint = document.getElementById('page-show-nav-hint');
+    if (navHint) navHint.textContent = t('page_show.nav_hint');
+
+    await _renderShowPage(_showViewerIndex);
+}
+
+function closePageViewer() {
+    const modal = document.getElementById('page-show-modal');
+    if (modal) modal.classList.add('hidden');
+
+    if (_showViewerRenderTask) {
+        try { _showViewerRenderTask.cancel(); } catch (_) { /* noop */ }
+        _showViewerRenderTask = null;
+    }
+    _showViewerPdf = null;
+
+    const canvas = document.getElementById('page-show-canvas');
+    if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // Sync main view to last viewed page so panel + canvas reflect Show's last page
+    loadPage(_showViewerIndex);
+}
+
+function navigatePageViewer(delta) {
+    if (!PAGES_DATA || PAGES_DATA.length === 0) return;
+    const n = PAGES_DATA.length;
+    const newIdx = ((_showViewerIndex + delta) % n + n) % n;
+    _showViewerIndex = newIdx;
+    _renderShowPage(newIdx);
+}
+
+function handlePageViewerOverlayClick(e) {
+    if (e.target.id === 'page-show-modal') closePageViewer();
+}
+
+async function _renderShowPage(index) {
+    if (!PAGES_DATA || index < 0 || index >= PAGES_DATA.length) return;
+    const page = PAGES_DATA[index];
+
+    const skeleton = document.getElementById('page-show-skeleton');
+    if (skeleton) skeleton.classList.remove('hidden');
+
+    const caption = document.getElementById('page-show-caption');
+    if (caption) {
+        const title = page.title || page.id || '';
+        caption.textContent = `${t('page_show.page')} ${index + 1} / ${PAGES_DATA.length}${title ? '  —  ' + title : ''}`;
+    }
+
+    if (_showViewerRenderTask) {
+        try { _showViewerRenderTask.cancel(); } catch (_) { /* noop */ }
+        _showViewerRenderTask = null;
+    }
+
+    if (typeof pdfjsLib === 'undefined') {
+        console.error('[PageShow] pdfjsLib not loaded.');
+        return;
+    }
+
+    const url = `/api/page/${page.id}/preview?t=${Date.now()}`;
+    try {
+        const pdf = await pdfjsLib.getDocument({ url }).promise;
+        _showViewerPdf = pdf;
+
+        const pdfPage = await pdf.getPage(1);
+
+        const canvas = document.getElementById('page-show-canvas');
+        const wrapper = document.getElementById('page-show-canvas-wrapper');
+        if (!canvas || !wrapper) return;
+
+        // Bail if a newer render superseded us
+        if (_showViewerPdf !== pdf) return;
+
+        const rect = wrapper.getBoundingClientRect();
+        const containerW = rect.width || wrapper.clientWidth;
+        const containerH = rect.height || wrapper.clientHeight;
+
+        const baseViewport = pdfPage.getViewport({ scale: 1 });
+        const scale = Math.min(
+            containerW / baseViewport.width,
+            containerH / baseViewport.height
+        );
+        const viewport = pdfPage.getViewport({ scale });
+        const dpr = window.devicePixelRatio || 1;
+
+        canvas.width  = Math.round(viewport.width  * dpr);
+        canvas.height = Math.round(viewport.height * dpr);
+        canvas.style.width  = Math.round(viewport.width)  + 'px';
+        canvas.style.height = Math.round(viewport.height) + 'px';
+
+        const ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+
+        const renderTask = pdfPage.render({ canvasContext: ctx, viewport });
+        _showViewerRenderTask = renderTask;
+        await renderTask.promise;
+
+        if (_showViewerRenderTask === renderTask) _showViewerRenderTask = null;
+        if (skeleton) skeleton.classList.add('hidden');
+
+    } catch (err) {
+        if (err && (err.name === 'RenderingCancelledException' || err.message === 'Rendering cancelled')) {
+            return;
+        }
+        console.error('[PageShow render]', err);
+        if (skeleton) skeleton.classList.add('hidden');
+    }
+}
+
+// Caption flash for Show: shows arbitrary text for `durationMs` then restores
+// the default "Página N/M — título". One timer at a time; rapid cycles only
+// keep the latest flash.
+let _captionFlashTimer = null;
+
+function _setShowCaptionDefault(index) {
+    const caption = document.getElementById('page-show-caption');
+    if (!caption || !PAGES_DATA || index < 0 || index >= PAGES_DATA.length) return;
+    const page = PAGES_DATA[index];
+    const title = page.title || page.id || '';
+    caption.textContent = `${t('page_show.page')} ${index + 1} / ${PAGES_DATA.length}${title ? '  —  ' + title : ''}`;
+}
+
+function _flashShowCaption(text, durationMs = 1800) {
+    const caption = document.getElementById('page-show-caption');
+    if (!caption) return;
+    caption.textContent = text;
+    if (_captionFlashTimer) clearTimeout(_captionFlashTimer);
+    _captionFlashTimer = setTimeout(() => {
+        _captionFlashTimer = null;
+        _setShowCaptionDefault(_showViewerIndex);
+    }, durationMs);
+}
+
+// Cycle layout from within Show: syncs the visible page into currentPageIndex,
+// runs cycleLayoutMode (which PUTs to the server and regenerates the preview
+// PDF), then re-renders the Show canvas and flashes the new mode name in the
+// caption. Stale cycles (user navigated away mid-flight) are ignored.
+async function _cycleLayoutFromShow(direction) {
+    if (isLayoutCycling) return;
+    if (!PAGES_DATA || PAGES_DATA.length === 0) return;
+    const idx = _showViewerIndex;
+    if (idx < 0 || idx >= PAGES_DATA.length) return;
+
+    if (currentPageIndex !== idx) {
+        await loadPage(idx);
+    }
+
+    await cycleLayoutMode(direction);
+
+    // Only refresh Show if the user hasn't navigated to a different page in the meantime.
+    if (_showViewerIndex !== idx) return;
+
+    await _renderShowPage(idx);
+
+    const labelKey = LAYOUT_MODE_LABEL_KEYS[currentPageLayoutMode] || currentPageLayoutMode || '';
+    const label = labelKey && labelKey !== currentPageLayoutMode ? t(labelKey) : currentPageLayoutMode;
+    _flashShowCaption(`${t('toast.layout_mode')}${label}`);
 }
 
 // Regenerate preview
