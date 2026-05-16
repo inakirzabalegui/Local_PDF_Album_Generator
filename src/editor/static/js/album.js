@@ -33,6 +33,7 @@ const LAYOUT_MODE_LABEL_KEYS = {
     'cuadricula_maximizada': 'album.layout_cuadricula_maximizada',
 };
 let isLayoutCycling = false;
+let isShuffling = false;
 
 // Page Show (fullscreen PDF viewer) state — tecla S
 let _showViewerIndex = 0;
@@ -288,6 +289,10 @@ function handleAlbumKeyboard(e) {
         else if ((e.key === 'l' || e.key === 'L') && !e.ctrlKey && !e.metaKey && !e.altKey) {
             e.preventDefault();
             _cycleLayoutFromShow(e.shiftKey ? -1 : 1);
+        }
+        else if ((e.key === 'a' || e.key === 'A') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+            _shuffleLayoutFromShow();
         }
         return;
     }
@@ -840,10 +845,12 @@ async function updateLayoutMode(newMode) {
 
 // Shuffle photos into a random order, refresh sidebar and re-render preview
 async function shuffleLayout() {
+    if (isShuffling) return;
     if (!PAGES_DATA || PAGES_DATA.length === 0) return;
     const pageId = PAGES_DATA[currentPageIndex].id;
 
     log('INFO', 'SHUFFLE_LAYOUT_START', { pageId });
+    isShuffling = true;
 
     try {
         const response = await fetch(`/api/page/${pageId}/shuffle-layout`, {
@@ -867,6 +874,8 @@ async function shuffleLayout() {
     } catch (error) {
         log('ERROR', 'SHUFFLE_LAYOUT_EXCEPTION', { error: error.message });
         showToast(t('error.connection_shuffle'), { type: 'error' });
+    } finally {
+        isShuffling = false;
     }
 }
 
@@ -1142,6 +1151,29 @@ async function _cycleLayoutFromShow(direction) {
     const labelKey = LAYOUT_MODE_LABEL_KEYS[currentPageLayoutMode] || currentPageLayoutMode || '';
     const label = labelKey && labelKey !== currentPageLayoutMode ? t(labelKey) : currentPageLayoutMode;
     _flashShowCaption(`${t('toast.layout_mode')}${label}`);
+}
+
+// Shuffle layout from within Show: syncs the visible page into currentPageIndex,
+// runs shuffleLayout (which POSTs and regenerates the preview PDF), then
+// re-renders the Show canvas and flashes a confirmation in the caption. Stale
+// shuffles (user navigated away mid-flight) are ignored.
+async function _shuffleLayoutFromShow() {
+    if (isShuffling) return;
+    if (!PAGES_DATA || PAGES_DATA.length === 0) return;
+    const idx = _showViewerIndex;
+    if (idx < 0 || idx >= PAGES_DATA.length) return;
+
+    if (currentPageIndex !== idx) {
+        await loadPage(idx);
+    }
+
+    await shuffleLayout();
+
+    if (_showViewerIndex !== idx) return;
+
+    await _renderShowPage(idx);
+
+    _flashShowCaption(t('toast.shuffled'));
 }
 
 // Regenerate preview
