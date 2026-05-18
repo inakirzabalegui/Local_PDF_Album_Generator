@@ -2,31 +2,21 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import queue
-import threading
 from pathlib import Path
 
-from flask import Response, current_app, jsonify, request, send_file, stream_with_context
+from flask import current_app, jsonify, request, send_file
 
 from src.editor.app import app
+from src.editor.sse_stream import sse_response
+from src.editor.workspace_op import workspace_op, WorkspaceOpBusy
 
 logger = logging.getLogger("album.editor.render")
-
-_render_lock = threading.Lock()
-_render_running = False
-
-
-def _is_render_running() -> bool:
-    return _render_running
 
 
 @app.route('/api/render/album/stream', methods=['POST'])
 def api_render_album_stream():
     """Render the album PDF (interior + cover) with SSE progress."""
-    global _render_running
-
     workspace = current_app.config.get('WORKSPACE')
     if not workspace:
         return jsonify({'success': False, 'error': 'No workspace configured'}), 400
@@ -34,30 +24,32 @@ def api_render_album_stream():
     if not (workspace / 'global_config.yaml').exists():
         return jsonify({'success': False, 'error': 'Workspace sin global_config.yaml'}), 400
 
-    if not _render_lock.acquire(blocking=False):
-        return jsonify({'success': False, 'error': 'Render ya en curso'}), 409
-    _render_running = True
+    # Acquire the global workspace mutex synchronously so we can 409 before
+    # opening the SSE stream, not emit an error event into it.
+    try:
+        _op_cm = workspace_op("render")
+        _op_cm.__enter__()
+    except WorkspaceOpBusy as busy:
+        return jsonify({'success': False, 'error': str(busy)}), 409
 
-    progress_queue: queue.Queue = queue.Queue()
-
-    def _run():
+    def _work(emit):
         try:
             from src.render.pdf_generator import generate_album
             from src.workspace.config import read_global_config, read_page_configs
             from src.workspace.reconciler import reconcile
             from src.workspace.rebalancer import rebalance
 
-            progress_queue.put({'step': 'reading'})
+            emit({'step': 'reading'})
             global_cfg = read_global_config(workspace)
             pages = read_page_configs(workspace, global_cfg)
 
-            progress_queue.put({'step': 'reconciling'})
+            emit({'step': 'reconciling'})
             pages = reconcile(pages, global_cfg, workspace)
 
-            progress_queue.put({'step': 'rebalancing'})
+            emit({'step': 'rebalancing'})
             pages = rebalance(pages, global_cfg, workspace)
 
-            progress_queue.put({'step': 'rendering', 'total': len(pages)})
+            emit({'step': 'rendering', 'total': len(pages)})
 
             output_paths = generate_album(pages, global_cfg, workspace)
 
@@ -69,33 +61,11 @@ def api_render_album_stream():
                     'path': str(pp),
                     'is_cover': '_cover' in pp.stem.lower(),
                 })
-            progress_queue.put({'step': 'done', 'outputs': outputs})
-        except Exception as e:
-            logger.exception('render failed')
-            progress_queue.put({'step': 'error', 'message': str(e)})
+            emit({'step': 'done', 'outputs': outputs})
         finally:
-            global _render_running
-            _render_running = False
-            _render_lock.release()
+            _op_cm.__exit__(None, None, None)
 
-    threading.Thread(target=_run, daemon=True).start()
-
-    def _generate():
-        while True:
-            try:
-                event = progress_queue.get(timeout=1800)
-                yield f"data: {json.dumps(event)}\n\n"
-                if event.get('step') in ('done', 'error'):
-                    break
-            except queue.Empty:
-                yield f"data: {json.dumps({'step': 'error', 'message': 'Timeout'})}\n\n"
-                break
-
-    return Response(
-        stream_with_context(_generate()),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    return sse_response(_work, timeout_s=1800)
 
 
 @app.route('/api/render/output', methods=['GET'])

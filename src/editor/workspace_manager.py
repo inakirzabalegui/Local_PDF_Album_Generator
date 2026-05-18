@@ -198,10 +198,16 @@ def normalize_page_numbers(workspace: Path) -> int:
     page_numbers starting from the current minimum. Uses a two-phase tmp
     rename to avoid collisions on disk.
 
+    Wrapped in ``workspace_transaction`` so a crash between phase 1 (tmp
+    renames) and phase 2 (rename to final + YAML write) rolls back the entire
+    workspace instead of leaving `_normalize_tmp_*` folders littering disk.
+
     Returns the number of pages whose folder name or page_number changed.
     """
     import re
     import uuid
+
+    from src.workspace.workspace_transaction import workspace_transaction
 
     folder_pattern = re.compile(r"^pagina_(\d+)_(.+)$")
 
@@ -245,26 +251,28 @@ def normalize_page_numbers(workspace: Path) -> int:
         return 0
 
     uid = uuid.uuid4().hex[:8]
-    tmp_paths: list[tuple[Path, dict, int, str]] = []
-    for entry, cfg_data, new_num, new_name in needs_change:
-        tmp_name = f"_normalize_tmp_{uid}_{entry.name}"
-        tmp_path = workspace / tmp_name
-        entry.rename(tmp_path)
-        tmp_paths.append((tmp_path, cfg_data, new_num, new_name))
-        logger.info(f"normalize phase-1: {entry.name} → {tmp_name}")
 
-    for tmp_path, cfg_data, new_num, new_name in tmp_paths:
-        final_path = workspace / new_name
-        tmp_path.rename(final_path)
-        cfg_path = final_path / "page_config.yaml"
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        data["page_number"] = new_num
-        if "photo_captions" not in data:
-            data["photo_captions"] = {}
-        with open(cfg_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
-        logger.info(f"normalize phase-2: → {new_name} (page_number={new_num})")
+    with workspace_transaction(workspace):
+        tmp_paths: list[tuple[Path, dict, int, str]] = []
+        for entry, cfg_data, new_num, new_name in needs_change:
+            tmp_name = f"_normalize_tmp_{uid}_{entry.name}"
+            tmp_path = workspace / tmp_name
+            entry.rename(tmp_path)
+            tmp_paths.append((tmp_path, cfg_data, new_num, new_name))
+            logger.info(f"normalize phase-1: {entry.name} → {tmp_name}")
+
+        for tmp_path, cfg_data, new_num, new_name in tmp_paths:
+            final_path = workspace / new_name
+            tmp_path.rename(final_path)
+            cfg_path = final_path / "page_config.yaml"
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            data["page_number"] = new_num
+            if "photo_captions" not in data:
+                data["photo_captions"] = {}
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+            logger.info(f"normalize phase-2: → {new_name} (page_number={new_num})")
 
     return len(needs_change)
 

@@ -19,9 +19,13 @@ from src.utils.naming import prettify_folder_name, folder_name_to_slug, build_se
 from src.workspace.initializer import create_workspace
 from src.workspace.config import write_global_config, write_page_configs, read_global_config
 from src.editor.trash import move_to_trash, TrashToken
+from src.editor.workspace_op import workspace_op, WorkspaceOpBusy, is_running as _ws_is_running
 
 logger = logging.getLogger("album.editor.source")
 
+# Deprecated module-level lock / flag — kept only so external code that imports
+# them by name does not break. New callers should use workspace_op() instead.
+# These names no longer guard anything; workspace_op holds the real mutex.
 _regen_lock = threading.Lock()
 _regen_running = False
 
@@ -380,8 +384,14 @@ def move_photos_to_folder(
 
 
 def is_regeneration_running() -> bool:
-    """Check if an album regeneration is currently in progress."""
-    return _regen_running
+    """Check if any heavy workspace op (regenerate / sync / render) is running.
+
+    Kept for backwards compatibility with existing route guards. Internally
+    delegates to workspace_op, so callers get strictly more protection: a
+    sync-in-progress will now reject a regenerate request, not just another
+    regenerate.
+    """
+    return _ws_is_running()
 
 
 def regenerate_album(source_path: Path, workspace_path: Path, progress_callback=None) -> bool:
@@ -397,16 +407,17 @@ def regenerate_album(source_path: Path, workspace_path: Path, progress_callback=
     Returns:
         True if successful, False otherwise
     """
-    global _regen_running
-
-    if not _regen_lock.acquire(blocking=False):
+    try:
+        # acquire the global workspace mutex under op name "regenerate"
+        _op_cm = workspace_op("regenerate")
+        _op_cm.__enter__()
+    except WorkspaceOpBusy:
         logger.warning("Regeneration already in progress, rejecting concurrent request")
         # #region agent log
         import json as _json_dbg; open('/Users/jzabalegui/Coding/Local_PDF_Album_Generator/.cursor/debug-02279c.log','a').write(_json_dbg.dumps({"sessionId":"02279c","hypothesisId":"H3","location":"source_manager.py:regenerate_album","message":"CONCURRENT regen rejected","data":{},"timestamp":__import__('time').time()})+'\n')
         # #endregion
         return False
 
-    _regen_running = True
     # #region agent log
     import json as _json_dbg; open('/Users/jzabalegui/Coding/Local_PDF_Album_Generator/.cursor/debug-02279c.log','a').write(_json_dbg.dumps({"sessionId":"02279c","hypothesisId":"H3","location":"source_manager.py:regenerate_album","message":"regen START","data":{"source":str(source_path),"workspace":str(workspace_path)},"timestamp":__import__('time').time()})+'\n')
     # #endregion
@@ -477,8 +488,8 @@ def regenerate_album(source_path: Path, workspace_path: Path, progress_callback=
         # #endregion
         return False
     finally:
-        _regen_running = False
-        _regen_lock.release()
+        # Release the workspace_op mutex acquired at the top of the function.
+        _op_cm.__exit__(None, None, None)
 
 
 def get_event_info(folder_path: Path) -> dict:
