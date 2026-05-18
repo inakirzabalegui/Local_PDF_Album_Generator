@@ -4,7 +4,9 @@
 
 // Album Editor State
 let currentPageIndex = 0;
-let selectedPhotoName = null;
+let selectedPhotoName = null;             // anchor — last single-clicked / range endpoint
+let selectedPhotoNames = new Set();        // multi-selection set
+let lastAnchorFilename = null;             // anchor for shift-range
 let sortableInstance = null;
 let currentPageCaptions = {};
 let currentPhotoOrder = [];
@@ -276,7 +278,7 @@ function handleAlbumKeyboard(e) {
                     navigatePagePanelSelection(-1);
                 }
             } else {
-                navigatePhotoSelection(-1);
+                navigatePhotoSelection(-1, e.shiftKey ? 'range' : 'replace');
             }
         } else if (e.key === 'ArrowDown') {
             e.preventDefault();
@@ -287,10 +289,10 @@ function handleAlbumKeyboard(e) {
                     navigatePagePanelSelection(1);
                 }
             } else {
-                navigatePhotoSelection(1);
+                navigatePhotoSelection(1, e.shiftKey ? 'range' : 'replace');
             }
         } else if (e.key === 'd' || e.key === 'D') {
-            if (selectedPhotoName) {
+            if (selectedPhotoNames.size > 0 || selectedPhotoName) {
                 e.preventDefault();
                 deleteSelectedPhoto();
             }
@@ -365,6 +367,12 @@ async function loadPage(index) {
 
 // Render page details in sidebar
 function renderPageDetails(page) {
+    // Drop selections that no longer exist on this page (filename set may have changed).
+    const validNames = new Set((page.images || []));
+    selectedPhotoNames = new Set(Array.from(selectedPhotoNames).filter(fn => validNames.has(fn)));
+    if (selectedPhotoName && !validNames.has(selectedPhotoName)) selectedPhotoName = null;
+    if (lastAnchorFilename && !validNames.has(lastAnchorFilename)) lastAnchorFilename = null;
+
     currentPageSectionTitles = Array.isArray(page.section_titles) ? page.section_titles.slice() : [];
     currentPageLayoutMode = page.layout_mode || 'mesa_de_luz';
     currentPageCaptions = page.photo_captions || {};
@@ -393,8 +401,14 @@ function renderPageDetails(page) {
         div.appendChild(dragHandle);
         div.appendChild(photoName);
         
-        div.addEventListener('click', (e) => selectPhoto(filename, e.target.closest('.photo-item')));
-        
+        div.addEventListener('click', (e) => {
+            const el = e.target.closest('.photo-item');
+            let mode = 'replace';
+            if (e.shiftKey) mode = 'range';
+            else if (e.metaKey || e.ctrlKey) mode = 'toggle';
+            selectPhoto(filename, el, mode);
+        });
+
         photoList.appendChild(div);
     });
     
@@ -410,6 +424,8 @@ function renderPageDetails(page) {
             const filename = dragEl.dataset.filename;
             const selected = Array.from(photoList.querySelectorAll('.photo-item.selected'))
                 .map(el => el.dataset.filename);
+            // If user drags an already-selected item, drag the whole selection.
+            // If user drags an unselected item, drag only that one.
             draggingAlbumFilenames = selected.includes(filename) ? selected : [filename];
             currentPhotoOrder = getPhotoOrder();
             dataTransfer.setData('text/plain', JSON.stringify(draggingAlbumFilenames));
@@ -424,25 +440,85 @@ function renderPageDetails(page) {
             handlePhotoReorder(evt);
         },
     });
+
+    syncPhotoSelectionUI();
 }
 
-// Select a photo
-function selectPhoto(filename, element) {
-    document.querySelectorAll('.photo-item').forEach(item => {
-        item.classList.remove('selected');
+// Select a photo. mode: 'replace' (default), 'toggle' (cmd/ctrl-click), 'range' (shift-click)
+function selectPhoto(filename, element, mode = 'replace') {
+    const items = Array.from(document.querySelectorAll('#photo-list .photo-item'));
+
+    if (mode === 'range' && lastAnchorFilename) {
+        const anchorIdx = items.findIndex(it => it.dataset.filename === lastAnchorFilename);
+        const targetIdx = items.findIndex(it => it.dataset.filename === filename);
+        if (anchorIdx >= 0 && targetIdx >= 0) {
+            const [lo, hi] = anchorIdx <= targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+            selectedPhotoNames = new Set(items.slice(lo, hi + 1).map(it => it.dataset.filename));
+            selectedPhotoName = filename;
+        } else {
+            selectedPhotoNames = new Set([filename]);
+            selectedPhotoName = filename;
+            lastAnchorFilename = filename;
+        }
+    } else if (mode === 'toggle') {
+        if (selectedPhotoNames.has(filename)) {
+            selectedPhotoNames.delete(filename);
+            if (selectedPhotoName === filename) {
+                selectedPhotoName = selectedPhotoNames.size > 0
+                    ? Array.from(selectedPhotoNames)[selectedPhotoNames.size - 1]
+                    : null;
+            }
+            lastAnchorFilename = selectedPhotoName;
+        } else {
+            selectedPhotoNames.add(filename);
+            selectedPhotoName = filename;
+            lastAnchorFilename = filename;
+        }
+    } else {
+        selectedPhotoNames = new Set([filename]);
+        selectedPhotoName = filename;
+        lastAnchorFilename = filename;
+    }
+
+    syncPhotoSelectionUI();
+}
+
+// Apply selectedPhotoNames Set to DOM, plus update delete button + caption editor.
+function syncPhotoSelectionUI() {
+    document.querySelectorAll('#photo-list .photo-item').forEach(item => {
+        item.classList.toggle('selected', selectedPhotoNames.has(item.dataset.filename));
     });
-    
-    element.classList.add('selected');
-    selectedPhotoName = filename;
-    
-    document.getElementById('delete-photo-btn').disabled = false;
-    
+
+    const count = selectedPhotoNames.size;
+    const delBtn = document.getElementById('delete-photo-btn');
+    if (delBtn) {
+        delBtn.disabled = count === 0;
+        if (count > 1) {
+            delBtn.textContent = `🗑️ Borrar (${count})`;
+        } else {
+            delBtn.textContent = t ? t('album.delete_photo') : '🗑️ Borrar Foto Seleccionada';
+        }
+    }
+
     const captionTextarea = document.getElementById('photo-caption');
     const captionBtn = document.getElementById('update-caption-btn');
-    
-    if (captionTextarea) captionTextarea.disabled = false;
-    if (captionTextarea) captionTextarea.value = currentPageCaptions[filename] || '';
-    if (captionBtn) captionBtn.disabled = false;
+    if (count === 1 && selectedPhotoName) {
+        if (captionTextarea) {
+            captionTextarea.disabled = false;
+            captionTextarea.value = currentPageCaptions[selectedPhotoName] || '';
+            captionTextarea.placeholder = '';
+        }
+        if (captionBtn) captionBtn.disabled = false;
+    } else {
+        if (captionTextarea) {
+            captionTextarea.disabled = true;
+            captionTextarea.value = '';
+            captionTextarea.placeholder = count > 1
+                ? 'Selecciona una sola foto para editar el pie'
+                : '';
+        }
+        if (captionBtn) captionBtn.disabled = true;
+    }
 }
 
 // Handle photo reorder via drag-and-drop
@@ -524,19 +600,10 @@ async function deletePhotoByName(filename) {
                 });
             }
 
-            if (selectedPhotoName === filename) {
-                selectedPhotoName = null;
-                document.getElementById('delete-photo-btn').disabled = true;
-
-                const captionTextarea = document.getElementById('photo-caption');
-                if (captionTextarea) {
-                    captionTextarea.disabled = true;
-                    captionTextarea.value = '';
-                }
-
-                const captionBtn = document.getElementById('update-caption-btn');
-                if (captionBtn) captionBtn.disabled = true;
-            }
+            selectedPhotoNames.delete(filename);
+            if (selectedPhotoName === filename) selectedPhotoName = null;
+            if (lastAnchorFilename === filename) lastAnchorFilename = null;
+            syncPhotoSelectionUI();
 
             await loadPage(currentPageIndex);
             await regeneratePreview();
@@ -551,14 +618,22 @@ async function deletePhotoByName(filename) {
 }
 
 async function deleteSelectedPhoto() {
-    if (!selectedPhotoName) {
+    const targets = selectedPhotoNames.size > 0
+        ? Array.from(selectedPhotoNames)
+        : (selectedPhotoName ? [selectedPhotoName] : []);
+
+    if (targets.length === 0) {
         log('WARN', 'DELETE_PHOTO_NO_SELECTION', {});
         return;
     }
 
+    const message = targets.length === 1
+        ? t('confirm.delete_photo', { name: targets[0] })
+        : `Se borrarán ${targets.length} fotos. ¿Continuar?`;
+
     const confirmed = await showConfirm({
-        title: 'Borrar foto',
-        message: t('confirm.delete_photo', { name: selectedPhotoName }),
+        title: targets.length === 1 ? 'Borrar foto' : `Borrar ${targets.length} fotos`,
+        message,
         danger: true
     });
 
@@ -568,12 +643,18 @@ async function deleteSelectedPhoto() {
     }
 
     const previewContainer = document.querySelector('#tab-album-content .preview-container');
-    const itemEl = document.querySelector(
-        `#photo-list .photo-item[data-filename="${CSS.escape(selectedPhotoName)}"]`
-    );
-    await playDeleteFeedback({ viewerEl: previewContainer, itemEl });
+    for (const filename of targets) {
+        const itemEl = document.querySelector(
+            `#photo-list .photo-item[data-filename="${CSS.escape(filename)}"]`
+        );
+        await playDeleteFeedback({ viewerEl: previewContainer, itemEl });
+        await deletePhotoByName(filename);
+    }
 
-    await deletePhotoByName(selectedPhotoName);
+    selectedPhotoNames.clear();
+    selectedPhotoName = null;
+    lastAnchorFilename = null;
+    syncPhotoSelectionUI();
 }
 
 // Split the current page into two: first half stays, second half moves to a new page right after
@@ -1216,24 +1297,24 @@ async function navigatePage(delta) {
     }
 }
 
-// Navigate photo selection with arrow keys
-function navigatePhotoSelection(delta) {
+// Navigate photo selection with arrow keys. mode: 'replace' or 'range'
+function navigatePhotoSelection(delta, mode = 'replace') {
     const items = Array.from(document.querySelectorAll('#photo-list .photo-item'));
     if (items.length === 0) return;
-    
-    const currentIndex = items.findIndex(item => item.classList.contains('selected'));
-    
+
+    const currentIndex = items.findIndex(item => item.dataset.filename === selectedPhotoName);
+
     let newIndex;
     if (currentIndex === -1) {
         newIndex = delta > 0 ? 0 : items.length - 1;
     } else {
         newIndex = currentIndex + delta;
     }
-    
+
     if (newIndex >= 0 && newIndex < items.length) {
         const newItem = items[newIndex];
         const filename = newItem.dataset.filename;
-        selectPhoto(filename, newItem);
+        selectPhoto(filename, newItem, mode);
         newItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 }
@@ -1963,6 +2044,11 @@ async function moveAlbumPhotosToPage(filenames, targetPageIndex) {
     const targetPage = PAGES_DATA[targetPageIndex];
     if (!sourcePage || !targetPage) return;
 
+    const sourceIdx = currentPageIndex;
+    const orderBeforeMove = getPhotoOrder();
+    const movedSet = new Set(filenames);
+    const lowestMovedIdx = orderBeforeMove.findIndex(fn => movedSet.has(fn));
+
     log('INFO', 'MOVE_ALBUM_PHOTOS_START', { filenames, target: targetPage.id });
 
     try {
@@ -1975,14 +2061,23 @@ async function moveAlbumPhotosToPage(filenames, targetPageIndex) {
 
         if (data.success) {
             showToast(`${filenames.length} foto(s) movida(s) a página ${targetPage.number}`, { type: 'success' });
-            // Regenerate both pages in parallel, then navigate to the target
-            const sourceIdx = currentPageIndex;
             await Promise.all([
                 fetch(`/api/page/${sourcePage.id}/regenerate`, { method: 'POST' }),
                 fetch(`/api/page/${targetPage.id}/regenerate`, { method: 'POST' }),
             ]);
-            // Navigate to the target page so the user sees where the photo landed
-            await loadPage(targetPageIndex);
+            // Stay on source page; select next remaining photo at lowest moved position
+            selectedPhotoNames.clear();
+            selectedPhotoName = null;
+            lastAnchorFilename = null;
+            await loadPage(sourceIdx);
+            const items = document.querySelectorAll('#photo-list .photo-item');
+            if (items.length > 0 && lowestMovedIdx >= 0) {
+                const selectIdx = Math.min(lowestMovedIdx, items.length - 1);
+                const target = items[selectIdx];
+                if (target) selectPhoto(target.dataset.filename, target, 'replace');
+            } else {
+                syncPhotoSelectionUI();
+            }
             await regeneratePreview();
         } else {
             log('ERROR', 'MOVE_ALBUM_PHOTOS_FAILED', { error: data.error });

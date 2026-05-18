@@ -6,7 +6,9 @@ let currentEventIndex = 0;
 let currentEventFolder = null;
 let eventFolders = [];
 let currentEventPhotos = [];
-let selectedSourcePhoto = null;
+let selectedSourcePhoto = null;             // anchor — last single-clicked
+let selectedSourcePhotoNames = new Set();    // multi-selection (top-level filenames only)
+let lastSourceAnchorFilename = null;         // anchor for shift-range
 let eventPanelOpen = true;
 let eventPanelFocused = false;
 let sourcePhotoListFocused = false;
@@ -85,7 +87,7 @@ function handleSourceKeyboard(e) {
                     navigateEventPanelSelection(-1);
                 }
             } else {
-                navigateSourcePhotoSelection(-1);
+                navigateSourcePhotoSelection(-1, e.shiftKey ? 'range' : 'replace');
             }
         } else if (e.key === 'ArrowDown') {
             e.preventDefault();
@@ -96,10 +98,10 @@ function handleSourceKeyboard(e) {
                     navigateEventPanelSelection(1);
                 }
             } else {
-                navigateSourcePhotoSelection(1);
+                navigateSourcePhotoSelection(1, e.shiftKey ? 'range' : 'replace');
             }
         } else if (e.key === 'd' || e.key === 'D') {
-            if (selectedSourcePhoto) {
+            if (selectedSourcePhotoNames.size > 0 || selectedSourcePhoto) {
                 e.preventDefault();
                 deleteSourcePhoto();
             }
@@ -221,6 +223,18 @@ function renderSourceEventDetails(event, photoSelectIndex = 0) {
     const photoList = document.getElementById('source-photo-list');
     if (!photoList) return;
 
+    // Drop selections that no longer exist on this event (filename set may have changed).
+    const validNames = new Set();
+    (event.sections || []).forEach(s => (s.photos || []).forEach(fn => validNames.add(`${s.subfolder || ''}::${fn}`)));
+    selectedSourcePhotoNames = new Set(Array.from(selectedSourcePhotoNames).filter(fn => validNames.has(`::${fn}`)));
+    if (selectedSourcePhoto) {
+        const key = `${selectedSourcePhoto.subfolder || ''}::${selectedSourcePhoto.filename}`;
+        if (!validNames.has(key)) selectedSourcePhoto = null;
+    }
+    if (lastSourceAnchorFilename && !validNames.has(`::${lastSourceAnchorFilename}`)) {
+        lastSourceAnchorFilename = null;
+    }
+
     photoList.textContent = '';
 
     let runningIdx = 0;
@@ -257,8 +271,13 @@ function renderSourceEventDetails(event, photoSelectIndex = 0) {
             span.textContent = filename;
             div.appendChild(span);
 
-            div.addEventListener('click', (e) =>
-                selectSourcePhoto(filename, e.target.closest('.photo-item'), subfolder));
+            div.addEventListener('click', (e) => {
+                const el = e.target.closest('.photo-item');
+                let mode = 'replace';
+                if (e.shiftKey) mode = 'range';
+                else if (e.metaKey || e.ctrlKey) mode = 'toggle';
+                selectSourcePhoto(filename, el, subfolder, mode);
+            });
 
             photoList.appendChild(div);
         });
@@ -296,88 +315,163 @@ function renderSourceEventDetails(event, photoSelectIndex = 0) {
         },
     });
 
-    if (currentEventPhotos.length > 0) {
+    syncSourcePhotoSelectionUI();
+
+    // Auto-select if no anchor restored.
+    if (currentEventPhotos.length > 0 && !selectedSourcePhoto) {
         const idx = Math.min(Math.max(photoSelectIndex, 0), currentEventPhotos.length - 1);
         const items = photoList.querySelectorAll('.photo-item');
         const target = items[idx];
         const photo = currentEventPhotos[idx];
         if (target && photo) {
-            selectSourcePhoto(photo.filename, target, photo.subfolder);
+            selectSourcePhoto(photo.filename, target, photo.subfolder, 'replace');
             target.scrollIntoView({ block: 'nearest' });
         }
     }
 }
 
-// Select a source photo and display it
-function selectSourcePhoto(filename, element, subfolder = '') {
-    document.querySelectorAll('#source-photo-list .photo-item').forEach(item => {
-        item.classList.remove('selected');
-    });
+// Select a source photo. mode: 'replace' (default), 'toggle' (cmd/ctrl), 'range' (shift).
+// Multi-selection only applies to top-level photos (subfolder photos don't participate).
+function selectSourcePhoto(filename, element, subfolder = '', mode = 'replace') {
+    if (element && typeof element.dataset.subfolder === 'string') {
+        subfolder = element.dataset.subfolder;
+    }
 
-    if (element) {
-        element.classList.add('selected');
-        if (typeof element.dataset.subfolder === 'string') {
-            subfolder = element.dataset.subfolder;
+    const isTopLevel = !subfolder;
+    const items = Array.from(document.querySelectorAll('#source-photo-list .photo-item'))
+        .filter(el => !el.dataset.subfolder);
+
+    if (!isTopLevel || mode === 'replace') {
+        selectedSourcePhotoNames = isTopLevel ? new Set([filename]) : new Set();
+        selectedSourcePhoto = { filename, subfolder: subfolder || '' };
+        lastSourceAnchorFilename = isTopLevel ? filename : null;
+    } else if (mode === 'range' && lastSourceAnchorFilename) {
+        const anchorIdx = items.findIndex(it => it.dataset.filename === lastSourceAnchorFilename);
+        const targetIdx = items.findIndex(it => it.dataset.filename === filename);
+        if (anchorIdx >= 0 && targetIdx >= 0) {
+            const [lo, hi] = anchorIdx <= targetIdx ? [anchorIdx, targetIdx] : [targetIdx, anchorIdx];
+            selectedSourcePhotoNames = new Set(items.slice(lo, hi + 1).map(it => it.dataset.filename));
+            selectedSourcePhoto = { filename, subfolder: '' };
+        } else {
+            selectedSourcePhotoNames = new Set([filename]);
+            selectedSourcePhoto = { filename, subfolder: '' };
+            lastSourceAnchorFilename = filename;
+        }
+    } else if (mode === 'toggle') {
+        if (selectedSourcePhotoNames.has(filename)) {
+            selectedSourcePhotoNames.delete(filename);
+            if (selectedSourcePhoto && selectedSourcePhoto.filename === filename) {
+                const remaining = Array.from(selectedSourcePhotoNames);
+                if (remaining.length > 0) {
+                    selectedSourcePhoto = { filename: remaining[remaining.length - 1], subfolder: '' };
+                } else {
+                    selectedSourcePhoto = null;
+                }
+            }
+            lastSourceAnchorFilename = selectedSourcePhoto ? selectedSourcePhoto.filename : null;
+        } else {
+            selectedSourcePhotoNames.add(filename);
+            selectedSourcePhoto = { filename, subfolder: '' };
+            lastSourceAnchorFilename = filename;
         }
     }
 
-    selectedSourcePhoto = { filename, subfolder: subfolder || '' };
+    syncSourcePhotoSelectionUI();
 
-    document.getElementById('delete-source-photo-btn').disabled = false;
-
-    // Load and display the image
-    const relPath = subfolder ? `${subfolder}/${filename}` : filename;
-    const imagePath = encodeURIComponent(currentEventFolder.path + '/' + relPath);
-    const img = document.getElementById('source-image-viewer');
-    if (img) {
-        img.src = `/api/source/image?path=${imagePath}`;
+    if (selectedSourcePhoto && currentEventFolder) {
+        const relPath = selectedSourcePhoto.subfolder
+            ? `${selectedSourcePhoto.subfolder}/${selectedSourcePhoto.filename}`
+            : selectedSourcePhoto.filename;
+        const imagePath = encodeURIComponent(currentEventFolder.path + '/' + relPath);
+        const img = document.getElementById('source-image-viewer');
+        if (img) img.src = `/api/source/image?path=${imagePath}`;
     }
 }
 
-// Delete a source photo
+function syncSourcePhotoSelectionUI() {
+    const anchorName = selectedSourcePhoto ? selectedSourcePhoto.filename : null;
+    const anchorSub = selectedSourcePhoto ? (selectedSourcePhoto.subfolder || '') : '';
+    document.querySelectorAll('#source-photo-list .photo-item').forEach(item => {
+        const fn = item.dataset.filename;
+        const sub = item.dataset.subfolder || '';
+        const inSet = !sub && selectedSourcePhotoNames.has(fn);
+        const isAnchor = fn === anchorName && sub === anchorSub;
+        item.classList.toggle('selected', inSet || isAnchor);
+    });
+
+    const count = selectedSourcePhotoNames.size + (selectedSourcePhoto && selectedSourcePhoto.subfolder ? 1 : 0);
+    const delBtn = document.getElementById('delete-source-photo-btn');
+    if (delBtn) {
+        delBtn.disabled = count === 0;
+        if (selectedSourcePhotoNames.size > 1) {
+            delBtn.textContent = `🗑️ Borrar (${selectedSourcePhotoNames.size})`;
+        } else {
+            delBtn.textContent = (typeof t === 'function' ? t('source.delete_photo') : '🗑️ Borrar Foto');
+        }
+    }
+}
+
+// Delete one or more source photos
 async function deleteSourcePhoto() {
-    if (!selectedSourcePhoto || !currentEventFolder) {
-        return;
+    if (!currentEventFolder) return;
+
+    // Build target list: prefer multi-selection (top-level only), else fall back to anchor.
+    let targets = [];
+    if (selectedSourcePhotoNames.size > 0) {
+        targets = Array.from(selectedSourcePhotoNames).map(filename => ({ filename, subfolder: '' }));
+    } else if (selectedSourcePhoto) {
+        targets = [{ filename: selectedSourcePhoto.filename, subfolder: selectedSourcePhoto.subfolder || '' }];
+    }
+    if (targets.length === 0) return;
+
+    if (targets.length > 1) {
+        const confirmed = await showConfirm({
+            title: `Borrar ${targets.length} fotos`,
+            message: `Se borrarán ${targets.length} fotos. ¿Continuar?`,
+            danger: true
+        });
+        if (!confirmed) return;
     }
 
-    const { filename, subfolder } = selectedSourcePhoto;
+    const firstTarget = targets[0];
     const deletedIndex = currentEventPhotos.findIndex(
-        p => p.filename === filename && (p.subfolder || '') === (subfolder || '')
+        p => p.filename === firstTarget.filename && (p.subfolder || '') === (firstTarget.subfolder || '')
     );
 
-    try {
-        const response = await fetch(`/api/source/folder/${currentEventFolder.name}/photo`, {
-            method: 'DELETE',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ filename, subfolder: subfolder || '' })
-        });
-
-        const data = await response.json();
-
-        if (data.success) {
-            log('INFO', 'DELETE_SOURCE_PHOTO_SUCCESS', { trash_token: data.trash_token });
-            if (data.trash_token && typeof pushUndoState === 'function') {
-                pushUndoState('delete_source_photo', {
-                    trash_token: data.trash_token,
-                    event_index: currentEventIndex,
-                });
+    for (const { filename, subfolder } of targets) {
+        try {
+            const response = await fetch(`/api/source/folder/${currentEventFolder.name}/photo`, {
+                method: 'DELETE',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ filename, subfolder: subfolder || '' })
+            });
+            const data = await response.json();
+            if (data.success) {
+                log('INFO', 'DELETE_SOURCE_PHOTO_SUCCESS', { trash_token: data.trash_token });
+                if (data.trash_token && typeof pushUndoState === 'function') {
+                    pushUndoState('delete_source_photo', {
+                        trash_token: data.trash_token,
+                        event_index: currentEventIndex,
+                    });
+                }
+                const viewerEl = document.querySelector('#tab-source-content .preview-container');
+                const itemEl = document.querySelector(
+                    `#source-photo-list .photo-item[data-filename="${CSS.escape(filename)}"]`
+                );
+                await playDeleteFeedback({ viewerEl, itemEl });
+            } else {
+                log('ERROR', 'DELETE_SOURCE_PHOTO_FAILED', { error: data.error });
+                showToast(t('error.delete_source_photo') + data.error, { type: 'error' });
             }
-
-            const viewerEl = document.querySelector('#tab-source-content .preview-container');
-            const itemEl = document.querySelector(
-                `#source-photo-list .photo-item[data-filename="${CSS.escape(filename)}"]`
-            );
-            await playDeleteFeedback({ viewerEl, itemEl });
-
-            selectedSourcePhoto = null;
-        } else {
-            log('ERROR', 'DELETE_SOURCE_PHOTO_FAILED', { error: data.error });
-            showToast(t('error.delete_source_photo') + data.error, { type: 'error' });
+        } catch (error) {
+            log('ERROR', 'DELETE_SOURCE_PHOTO_EXCEPTION', { error: error.message });
+            showToast(t('error.connection_delete_source_photo'), { type: 'error' });
         }
-    } catch (error) {
-        log('ERROR', 'DELETE_SOURCE_PHOTO_EXCEPTION', { error: error.message });
-        showToast(t('error.connection_delete_source_photo'), { type: 'error' });
     }
+
+    selectedSourcePhotoNames.clear();
+    selectedSourcePhoto = null;
+    lastSourceAnchorFilename = null;
 
     await loadEvent(currentEventIndex, deletedIndex >= 0 ? deletedIndex : 0);
 }
@@ -609,23 +703,27 @@ async function regenerateAlbum() {
 }
 
 // Navigate photo selection
-function navigateSourcePhotoSelection(delta) {
+function navigateSourcePhotoSelection(delta, mode = 'replace') {
     const items = Array.from(document.querySelectorAll('#source-photo-list .photo-item'));
     if (items.length === 0) return;
-    
-    const currentIndex = items.findIndex(item => item.classList.contains('selected'));
-    
+
+    const anchorName = selectedSourcePhoto ? selectedSourcePhoto.filename : null;
+    const anchorSub = selectedSourcePhoto ? (selectedSourcePhoto.subfolder || '') : '';
+    const currentIndex = items.findIndex(item =>
+        item.dataset.filename === anchorName && (item.dataset.subfolder || '') === anchorSub);
+
     let newIndex;
     if (currentIndex === -1) {
         newIndex = delta > 0 ? 0 : items.length - 1;
     } else {
         newIndex = currentIndex + delta;
     }
-    
+
     if (newIndex >= 0 && newIndex < items.length) {
         const newItem = items[newIndex];
         const filename = newItem.dataset.filename;
-        selectSourcePhoto(filename, newItem);
+        const subfolder = newItem.dataset.subfolder || '';
+        selectSourcePhoto(filename, newItem, subfolder, mode);
         newItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 }
@@ -794,8 +892,10 @@ async function moveSourcePhotosToEvent(filenames, targetEventIndex) {
             eventFolders[currentEventIndex].photo_count = data.source_folder.photo_count || 0;
             eventFolders[targetEventIndex].photo_count = data.target_folder.photo_count || 0;
 
+            selectedSourcePhotoNames.clear();
             selectedSourcePhoto = null;
-            document.getElementById('delete-source-photo-btn').disabled = true;
+            lastSourceAnchorFilename = null;
+            syncSourcePhotoSelectionUI();
         } else {
             log('ERROR', 'MOVE_SOURCE_PHOTOS_FAILED', { error: data.error });
             showToast('Error al mover fotos: ' + data.error, { type: 'error' });
