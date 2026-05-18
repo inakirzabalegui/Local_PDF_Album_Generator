@@ -59,6 +59,10 @@ function updateRegenBtnLabel() {
 
 function handleSourceKeyboard(e) {
     if (currentTab !== 'source') return;
+
+    // Source photo viewer handles its own keys (PhotoViewer module, capture phase)
+    if (PhotoViewer && PhotoViewer.isOpen()) return;
+
     if (document.querySelector('.modal:not(.hidden)')) return;
 
     if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
@@ -105,6 +109,12 @@ function handleSourceKeyboard(e) {
         } else if (e.key === 'r' || e.key === 'R') {
             e.preventDefault();
             renameEvent();
+        } else if (e.key === 'v' || e.key === 'V') {
+            e.preventDefault();
+            openSourcePhotoViewerFromCurrent();
+        } else if (e.key === 'x' || e.key === 'X') {
+            e.preventDefault();
+            deleteEvent();
         }
     }
 }
@@ -449,9 +459,11 @@ async function deleteEvent() {
                 });
             }
             showToast(t('success.event_deleted'), { type: 'success' });
+            const targetIndex = currentEventIndex;
             await loadEventFolders();
             if (eventFolders.length > 0) {
-                await loadEvent(0);
+                const newIndex = Math.min(targetIndex, eventFolders.length - 1);
+                await loadEvent(Math.max(0, newIndex));
             }
         } else {
             log('ERROR', 'DELETE_EVENT_FAILED', { error: data.error });
@@ -866,6 +878,82 @@ async function restoreSourceDeletion(action, data) {
         log('ERROR', 'RESTORE_SOURCE_DELETION_FAILED', { error: error.message });
         throw error;
     }
+}
+
+// ── Source photo viewer — delegates to the unified PhotoViewer module ─────────
+
+function openSourcePhotoViewerFromCurrent() {
+    if (!currentEventFolder) return;
+    const domItems = Array.from(document.querySelectorAll('#source-photo-list .photo-item'));
+    if (domItems.length === 0) return;
+    const items = domItems.map(el => ({
+        filename: el.dataset.filename,
+        subfolder: el.dataset.subfolder || '',
+    }));
+    let initialIndex = 0;
+    if (selectedSourcePhoto && selectedSourcePhoto.filename) {
+        const idx = items.findIndex(it =>
+            it.filename === selectedSourcePhoto.filename &&
+            (it.subfolder || '') === (selectedSourcePhoto.subfolder || '')
+        );
+        if (idx >= 0) initialIndex = idx;
+    }
+    PhotoViewer.open({
+        items,
+        initialIndex,
+        imageUrlFor: (it) => {
+            const rel = it.subfolder ? `${it.subfolder}/${it.filename}` : it.filename;
+            return `/api/source/image?path=${encodeURIComponent(currentEventFolder.path + '/' + rel)}`;
+        },
+        captionFor: (it) => it.filename,
+        wrap: true,
+        onIndexChange: (it) => {
+            const el = document.querySelector(
+                `#source-photo-list .photo-item[data-filename="${CSS.escape(it.filename)}"]`
+            );
+            if (el) selectSourcePhoto(it.filename, el, it.subfolder);
+        },
+        onDeletePhoto: async (it, idx) => {
+            const domItems2 = Array.from(document.querySelectorAll('#source-photo-list .photo-item'));
+            const viewerContent = document.getElementById('photo-viewer-img')?.closest('.photo-viewer-content');
+            const itemEl = domItems2[idx] || null;
+            await playDeleteFeedback({ viewerEl: viewerContent, itemEl });
+            try {
+                const response = await fetch(`/api/source/folder/${currentEventFolder.name}/photo`, {
+                    method: 'DELETE',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ filename: it.filename, subfolder: it.subfolder || '' }),
+                });
+                const data = await response.json();
+                if (!data.success) {
+                    showToast((typeof t === 'function' ? t('error.delete_source_photo') : 'Error: ') + data.error, { type: 'error' });
+                    return { remaining: domItems2.length, nextIndex: idx };
+                }
+                if (data.trash_token && typeof pushUndoState === 'function') {
+                    pushUndoState('delete_source_photo', {
+                        trash_token: data.trash_token,
+                        event_index: currentEventIndex,
+                    });
+                }
+                const remaining = domItems2.length - 1;
+                const nextIdx = remaining <= 0 ? 0 : Math.min(idx, remaining - 1);
+                await loadEvent(currentEventIndex, nextIdx);
+                const newDomItems = Array.from(document.querySelectorAll('#source-photo-list .photo-item'));
+                const newItems = newDomItems.map(el => ({
+                    filename: el.dataset.filename,
+                    subfolder: el.dataset.subfolder || '',
+                }));
+                return { remaining, nextIndex: nextIdx, newItems };
+            } catch (error) {
+                log('ERROR', 'DELETE_SOURCE_PHOTO_VIEWER_EXCEPTION', { error: error.message });
+                showToast(typeof t === 'function' ? t('error.connection_delete_source_photo') : 'Error de conexión', { type: 'error' });
+                return { remaining: domItems2.length, nextIndex: idx };
+            }
+        },
+        extraKeys: {
+            'x': (close) => { close(); deleteEvent(); },
+        },
+    });
 }
 
 // Initialize when tab is switched
