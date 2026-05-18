@@ -279,6 +279,42 @@ def _try_column_major_layout(
     return None
 
 
+def _rotate_and_jitter(
+    photo_w: float, photo_h: float, config: dict, rng: random.Random,
+) -> tuple[float, float, float, float, float]:
+    """Apply rotation shrink + jitter for one photo.
+
+    RNG call order: rotation → jitter_x → jitter_y (3 calls). Critical: callers
+    must invoke this once per photo in the same order as the original inline
+    code so the deterministic seeded RNG produces byte-identical output.
+
+    Returns (photo_w_adjusted, photo_h_adjusted, rotation, jitter_x, jitter_y).
+    """
+    rotation = rng.uniform(-config["rotation_range"], config["rotation_range"])
+    if abs(rotation) > 0.1:
+        rad = abs(rotation) * math.pi / 180
+        reduction = 1.0 / (math.cos(rad) + (photo_h / photo_w) * math.sin(rad))
+        reduction = min(reduction, 0.95)
+        photo_w *= reduction
+        photo_h *= reduction
+    max_jitter = BASE_GAP * config["jitter_factor"] * 0.5
+    jitter_x = rng.uniform(-max_jitter, max_jitter)
+    jitter_y = rng.uniform(-max_jitter, max_jitter)
+    return photo_w, photo_h, rotation, jitter_x, jitter_y
+
+
+def _clamp_to_page(
+    x: float, y: float, photo_w: float, photo_h: float,
+    margin_left: float, effective_margin_top: float,
+    page_w: float, page_h: float, margin_right: float, margin_bottom: float,
+) -> tuple[float, float]:
+    """Clamp (x, y) so the photo stays inside the safe-print area."""
+    safety_margin = 2
+    x = max(margin_left + safety_margin, min(x, page_w - margin_right - photo_w - safety_margin))
+    y = max(effective_margin_top + safety_margin, min(y, page_h - margin_bottom - photo_h - safety_margin))
+    return x, y
+
+
 def compute_layout(
     image_paths: list[Path],
     seed: int,
@@ -409,17 +445,7 @@ def compute_layout(
             photo_w = rect_w
             photo_h = rect_h
 
-            rotation = rng.uniform(-config["rotation_range"], config["rotation_range"])
-            if abs(rotation) > 0.1:
-                rad = abs(rotation) * math.pi / 180
-                reduction = 1.0 / (math.cos(rad) + (photo_h / photo_w) * math.sin(rad))
-                reduction = min(reduction, 0.95)
-                photo_w *= reduction
-                photo_h *= reduction
-
-            max_jitter = BASE_GAP * config["jitter_factor"] * 0.5
-            jitter_x = rng.uniform(-max_jitter, max_jitter)
-            jitter_y = rng.uniform(-max_jitter, max_jitter)
+            photo_w, photo_h, rotation, jitter_x, jitter_y = _rotate_and_jitter(photo_w, photo_h, config, rng)
 
             # Re-center the (possibly shrunk-by-rotation) photo inside its rect
             # so rotation doesn't make it cross into a neighbour's rect.
@@ -429,9 +455,7 @@ def compute_layout(
             x = margin_left + rect_x + center_offset_x + jitter_x
             y = effective_margin_top + rect_y + center_offset_y + jitter_y
 
-            safety_margin = 2
-            x = max(margin_left + safety_margin, min(x, page_w - margin_right - photo_w - safety_margin))
-            y = max(effective_margin_top + safety_margin, min(y, page_h - margin_bottom - photo_h - safety_margin))
+            x, y = _clamp_to_page(x, y, photo_w, photo_h, margin_left, effective_margin_top, page_w, page_h, margin_right, margin_bottom)
 
             z = _interleaved_z(placement_idx, n, rng)
 
@@ -458,24 +482,12 @@ def compute_layout(
                 photo_w = col_w
                 photo_h = col_w / real_ar
 
-                rotation = rng.uniform(-config["rotation_range"], config["rotation_range"])
-                if abs(rotation) > 0.1:
-                    rad = abs(rotation) * math.pi / 180
-                    reduction = 1.0 / (math.cos(rad) + (photo_h / photo_w) * math.sin(rad))
-                    reduction = min(reduction, 0.95)
-                    photo_w *= reduction
-                    photo_h *= reduction
-
-                max_jitter = BASE_GAP * config["jitter_factor"] * 0.5
-                jitter_x = rng.uniform(-max_jitter, max_jitter)
-                jitter_y = rng.uniform(-max_jitter, max_jitter)
+                photo_w, photo_h, rotation, jitter_x, jitter_y = _rotate_and_jitter(photo_w, photo_h, config, rng)
 
                 x = current_x + jitter_x
                 y = current_y + jitter_y
 
-                safety_margin = 2
-                x = max(margin_left + safety_margin, min(x, page_w - margin_right - photo_w - safety_margin))
-                y = max(effective_margin_top + safety_margin, min(y, page_h - margin_bottom - photo_h - safety_margin))
+                x, y = _clamp_to_page(x, y, photo_w, photo_h, margin_left, effective_margin_top, page_w, page_h, margin_right, margin_bottom)
 
                 z = _interleaved_z(photo_idx, n, rng)
 
@@ -510,25 +522,12 @@ def compute_layout(
                 photo_w = real_ar * row_h
                 photo_h = row_h
 
-                rotation = rng.uniform(-config["rotation_range"], config["rotation_range"])
-
-                if abs(rotation) > 0.1:
-                    rad = abs(rotation) * math.pi / 180
-                    reduction = 1.0 / (math.cos(rad) + (photo_h / photo_w) * math.sin(rad))
-                    reduction = min(reduction, 0.95)
-                    photo_w *= reduction
-                    photo_h *= reduction
-
-                max_jitter = BASE_GAP * config["jitter_factor"] * 0.5
-                jitter_x = rng.uniform(-max_jitter, max_jitter)
-                jitter_y = rng.uniform(-max_jitter, max_jitter)
+                photo_w, photo_h, rotation, jitter_x, jitter_y = _rotate_and_jitter(photo_w, photo_h, config, rng)
 
                 x = current_x + jitter_x
                 y = current_y + jitter_y
 
-                safety_margin = 2
-                x = max(margin_left + safety_margin, min(x, page_w - margin_right - photo_w - safety_margin))
-                y = max(effective_margin_top + safety_margin, min(y, page_h - margin_bottom - photo_h - safety_margin))
+                x, y = _clamp_to_page(x, y, photo_w, photo_h, margin_left, effective_margin_top, page_w, page_h, margin_right, margin_bottom)
 
                 z = _interleaved_z(photo_idx, n, rng)
 
