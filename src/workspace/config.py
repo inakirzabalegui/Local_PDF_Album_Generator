@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 
 from src.printing.overrides import resolve_specs
+from src.workspace.atomic_yaml import write_text as _atomic_write_text
 from src.printing.provider import (
     CoverSpec,
     OverridesConfig,
@@ -166,6 +167,11 @@ sub_group_ids: {sub_group_ids}
 # Fecha de sección en formato DD/MM/YYYY (derivada del prefijo YYYYMMDD_ de la carpeta fuente).
 # Usada para reordenar secciones con --resort-sections. Vacío si no hay prefijo de fecha.
 section_date: '{section_date}'
+
+# Override manual del subtítulo (section_titles[1]). Si tiene valor, el sync
+# respeta este texto literal y NO lo reconstruye desde sub_group_ids.
+# null = comportamiento por defecto (derivado del FS).
+section_subtitle_override: {section_subtitle_override}
 """
 
 # ── Data models ──────────────────────────────────────────────────────────────
@@ -278,6 +284,7 @@ class PageConfig:
     section_id: str = ""
     sub_group_ids: list[str] = field(default_factory=list)
     section_date: str = ""
+    section_subtitle_override: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -296,6 +303,7 @@ class PageConfig:
             "section_id": self.section_id,
             "sub_group_ids": list(self.sub_group_ids),
             "section_date": self.section_date,
+            "section_subtitle_override": self.section_subtitle_override,
         }
 
     def image_files(self) -> list[Path]:
@@ -368,8 +376,7 @@ def write_global_config(workspace: Path, cfg: GlobalConfig) -> Path:
         date_range=cfg.date_range,
     )
 
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+    _atomic_write_text(path, content)
 
     return path
 
@@ -403,6 +410,12 @@ def write_page_configs(page_map: list[PageConfig]) -> None:
         else:
             sub_group_ids_str = "\n  - " + "\n  - ".join(f'"{s}"' for s in pc.sub_group_ids)
 
+        if pc.section_subtitle_override is None:
+            subtitle_override_str = "null"
+        else:
+            escaped = pc.section_subtitle_override.replace('"', '\\"')
+            subtitle_override_str = f'"{escaped}"'
+
         content = PAGE_CONFIG_TEMPLATE.format(
             page_number=pc.page_number,
             photo_count=pc.photo_count,
@@ -419,10 +432,10 @@ def write_page_configs(page_map: list[PageConfig]) -> None:
             section_id=section_id_str,
             sub_group_ids=sub_group_ids_str,
             section_date=pc.section_date or "",
+            section_subtitle_override=subtitle_override_str,
         )
 
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
+        _atomic_write_text(path, content)
 
 
 # ── Readers ──────────────────────────────────────────────────────────────────
@@ -561,6 +574,7 @@ def read_page_configs(workspace: Path, global_cfg: GlobalConfig) -> list[PageCon
                 section_id=data.get("section_id", "") or "",
                 sub_group_ids=list(data.get("sub_group_ids", []) or []),
                 section_date=str(data.get("section_date", "") or ""),
+                section_subtitle_override=(data.get("section_subtitle_override") if data.get("section_subtitle_override") not in (None, "null", "") else None),
             )
         )
 

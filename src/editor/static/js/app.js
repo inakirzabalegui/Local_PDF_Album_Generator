@@ -147,6 +147,14 @@ async function regenerateAlbumFromHeader() {
 // ── Sync (light, non-destructive) ────────────────────────────────────────────
 async function syncAlbumFromHeader() {
     const btn = document.getElementById('sync-album-header-btn');
+
+    // Auto-save in-flight editor edits before sync wipes them via reload.
+    // Mirrors the NAVIGATE_AUTOSAVE pattern in editor.js for cross-page nav.
+    if (typeof pendingChanges !== 'undefined' && pendingChanges > 0
+            && typeof saveChanges === 'function') {
+        try { await saveChanges(true); } catch (_) { /* best-effort */ }
+    }
+
     if (btn) btn.disabled = true;
     if (typeof showLoading === 'function') showLoading('Calculando cambios…');
 
@@ -177,6 +185,11 @@ async function syncAlbumFromHeader() {
     const s = diff.summary;
     const totalChanges = s.added + s.removed + s.renamed + s.new_sections + s.removed_sections;
 
+    // Capture the preview hash so the server can verify the source hasn't
+    // drifted between preview and apply (A2/C4). If drift is detected, the
+    // /apply endpoint returns 409 and we surface a re-preview prompt.
+    const expectedHash = diff.hash || null;
+
     // No source-side changes — but apply_sync's title-rebuild step still runs
     // and migrates legacy YAMLs (backfills sub_group_ids from the manifest,
     // reconstructs section_titles[1] for sub-grouped pages). Skip the confirm
@@ -188,7 +201,7 @@ async function syncAlbumFromHeader() {
             const response = await fetch('/api/source/sync-album/apply', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}),
+                body: JSON.stringify({ expected_hash: expectedHash }),
             });
             if (!response.ok) {
                 const errData = await response.json().catch(() => ({}));
@@ -236,6 +249,8 @@ async function syncAlbumFromHeader() {
     if (s.renamed) lines.push(`✎ ${s.renamed} sección(es) renombrada(s)`);
     if (s.new_sections) lines.push(`＋ ${s.new_sections} sección(es) nueva(s)`);
     if (s.removed_sections) lines.push(`✖ ${s.removed_sections} sección(es) eliminada(s)`);
+    if (s.recovered) lines.push(`🔍 ${s.recovered} sección(es) recuperada(s) por fecha`);
+    if (s.ambiguous) lines.push(`⚠️ ${s.ambiguous} sección(es) ambigua(s) (no recuperadas)`);
 
     const detailsBlocks = [];
     if (diff.renamed_sections.length) {
@@ -246,6 +261,16 @@ async function syncAlbumFromHeader() {
     }
     if (diff.removed_sections.length) {
         detailsBlocks.push('Eliminadas:\n' + diff.removed_sections.map(r => `  "${r.title}" (${r.page_count} págs)`).join('\n'));
+    }
+    if (diff.recovered_sections && diff.recovered_sections.length) {
+        detailsBlocks.push('Recuperadas por fecha:\n' + diff.recovered_sections.map(r =>
+            `  "${r.title}" (${r.date}, ${r.page_count} págs) ← "${r.source_group}"`
+        ).join('\n'));
+    }
+    if (diff.ambiguous_sections && diff.ambiguous_sections.length) {
+        detailsBlocks.push('Ambiguas (NO recuperadas — revisa manualmente):\n' + diff.ambiguous_sections.map(a =>
+            `  "${a.title}" (${a.date}, ${a.page_count} págs) → candidatos: ${a.candidate_groups.join(', ')}`
+        ).join('\n'));
     }
 
     const message = '🔄 Sincronizar workspace con source\n\n' + lines.join('\n') +
@@ -265,10 +290,19 @@ async function syncAlbumFromHeader() {
         const response = await fetch('/api/source/sync-album/apply', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
+            body: JSON.stringify({ expected_hash: expectedHash }),
         });
         if (!response.ok) {
             const errData = await response.json().catch(() => ({}));
+            // Drift detected: source changed between preview and apply. Surface
+            // a clear toast and let the user re-trigger Sincronizar.
+            if (response.status === 409 && errData.code === 'diff_drift') {
+                if (typeof hideGenerationModal === 'function') hideGenerationModal();
+                showToast(errData.error || 'El origen cambió. Vuelve a sincronizar.', {
+                    type: 'warning', duration: 8000,
+                });
+                return;
+            }
             throw new Error(errData.error || `HTTP ${response.status}`);
         }
         const reader = response.body.getReader();
@@ -303,9 +337,14 @@ async function syncAlbumFromHeader() {
                 }
             }
         }
+        // Stream ended without explicit done — reload anyway so the user
+        // doesn't get a permanently-stuck modal if the server closed early.
+        if (typeof hideGenerationModal === 'function') hideGenerationModal();
+        window.location.reload();
     } catch (e) {
         if (typeof hideGenerationModal === 'function') hideGenerationModal();
-        showToast('Error en sync: ' + e.message, { type: 'error' });
+        const msg = (e && e.message) ? e.message : 'conexión interrumpida';
+        showToast('Error en sync: ' + msg, { type: 'error' });
     } finally {
         if (btn) btn.disabled = false;
     }

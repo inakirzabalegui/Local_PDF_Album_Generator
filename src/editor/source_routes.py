@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import queue
-import threading
 from pathlib import Path
 
-from flask import jsonify, request, send_file, current_app, Response, stream_with_context
+from flask import jsonify, request, send_file, current_app
 
 from src.editor.app import app
+from src.editor.sse_stream import sse_response
 from src.editor.source_manager import (
     list_event_folders,
     list_photos,
@@ -25,6 +23,7 @@ from src.editor.source_manager import (
     write_event_completed,
 )
 from src.editor.trash import restore_from_trash
+from src.editor.workspace_op import workspace_op, WorkspaceOpBusy
 
 logger = logging.getLogger("album.editor.source")
 
@@ -332,56 +331,33 @@ def api_regenerate_source_album_stream():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-    progress_queue: queue.Queue = queue.Queue()
-
-    def _run():
-        def _cb(event):
-            progress_queue.put(event)
-
-        try:
-            success = regenerate_album(source, workspace, progress_callback=_cb)
-            if success:
-                from src.editor.workspace_manager import load_workspace as _lw
-                try:
-                    global_cfg, pages = _lw(workspace)
-                    content = [p for p in pages if not p.is_cover and not p.is_backcover]
-                    content.sort(key=lambda p: p.page_number)
-                    pages_data = [
-                        {
-                            'id': p.folder.name,
-                            'number': p.page_number,
-                            'title': p.section_titles[0] if p.section_titles else f'Page {p.page_number}',
-                            'photo_count': p.photo_count,
-                            'layout_mode': p.layout_mode,
-                        }
-                        for p in content
-                    ]
-                except Exception:
-                    pages_data = []
-                progress_queue.put({'step': 'done', 'pages': pages_data})
-            else:
-                progress_queue.put({'step': 'error', 'message': 'Regeneración fallida'})
-        except Exception as e:
-            progress_queue.put({'step': 'error', 'message': str(e)})
-
-    threading.Thread(target=_run, daemon=True).start()
-
-    def _generate():
-        while True:
+    # regenerate_album acquires the workspace mutex internally; do NOT
+    # double-acquire here.
+    def _work(emit):
+        success = regenerate_album(source, workspace, progress_callback=emit)
+        if success:
+            from src.editor.workspace_manager import load_workspace as _lw
             try:
-                event = progress_queue.get(timeout=600)
-                yield f"data: {json.dumps(event)}\n\n"
-                if event.get('step') in ('done', 'error'):
-                    break
-            except queue.Empty:
-                yield f"data: {json.dumps({'step': 'error', 'message': 'Timeout'})}\n\n"
-                break
+                global_cfg, pages = _lw(workspace)
+                content = [p for p in pages if not p.is_cover and not p.is_backcover]
+                content.sort(key=lambda p: p.page_number)
+                pages_data = [
+                    {
+                        'id': p.folder.name,
+                        'number': p.page_number,
+                        'title': p.section_titles[0] if p.section_titles else f'Page {p.page_number}',
+                        'photo_count': p.photo_count,
+                        'layout_mode': p.layout_mode,
+                    }
+                    for p in content
+                ]
+            except Exception:
+                pages_data = []
+            emit({'step': 'done', 'pages': pages_data})
+        else:
+            emit({'step': 'error', 'message': 'Regeneración fallida'})
 
-    return Response(
-        stream_with_context(_generate()),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    return sse_response(_work, timeout_s=600)
 
 
 @app.route('/api/source/sync-album/preview', methods=['POST', 'GET'])
@@ -408,7 +384,13 @@ def api_sync_album_preview():
 
 @app.route('/api/source/sync-album/apply', methods=['POST'])
 def api_sync_album_apply():
-    """Apply sync diff to workspace with SSE progress."""
+    """Apply sync diff to workspace with SSE progress.
+
+    Body (optional):
+      - expected_hash: str — hash returned by the matching /preview call. If
+        provided and the freshly-computed diff hash differs, the request is
+        rejected with 409 so the user can re-preview the new state (A2/C4).
+    """
     try:
         source = Path(current_app.config.get('SOURCE'))
         workspace = Path(current_app.config.get('WORKSPACE'))
@@ -419,15 +401,42 @@ def api_sync_album_apply():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
-    progress_queue: queue.Queue = queue.Queue()
+    body = request.get_json(silent=True) or {}
+    expected_hash = body.get('expected_hash')
 
-    def _run():
-        def _cb(event):
-            progress_queue.put(event)
+    # Pre-flight: recompute diff and compare to the hash the user confirmed.
+    # If the source changed between preview and apply, surface a 409 with the
+    # fresh diff so the UI can prompt for re-preview rather than silently
+    # applying a different operation than the user saw.
+    if expected_hash:
+        try:
+            from src.workspace.syncer import compute_sync_diff as _csd
+            fresh_diff = _csd(source, workspace)
+            fresh_hash = fresh_diff.compute_hash()
+            if fresh_hash != expected_hash:
+                return jsonify({
+                    'success': False,
+                    'error': 'El origen ha cambiado desde la previsualización. Vuelve a sincronizar.',
+                    'code': 'diff_drift',
+                    'diff': fresh_diff.to_dict(),
+                }), 409
+        except Exception as e:
+            logger.exception('sync apply pre-flight diff failed')
+            return jsonify({'success': False, 'error': str(e)}), 500
+
+    # Acquire the global workspace mutex synchronously so we can 409 before
+    # opening the SSE stream, not emit an error event into it.
+    try:
+        _op_cm = workspace_op("sync")
+        _op_cm.__enter__()
+    except WorkspaceOpBusy as busy:
+        return jsonify({'success': False, 'error': str(busy)}), 409
+
+    def _work(emit):
         try:
             from src.workspace.syncer import compute_sync_diff, apply_sync
             diff = compute_sync_diff(source, workspace)
-            ok = apply_sync(source, workspace, diff, progress_callback=_cb)
+            ok = apply_sync(source, workspace, diff, progress_callback=emit)
             if ok:
                 from src.editor.workspace_manager import load_workspace as _lw
                 try:
@@ -446,31 +455,13 @@ def api_sync_album_apply():
                     ]
                 except Exception:
                     pages_data = []
-                progress_queue.put({'step': 'done', 'pages': pages_data})
+                emit({'step': 'done', 'pages': pages_data})
             else:
-                progress_queue.put({'step': 'error', 'message': 'Sync falló'})
-        except Exception as e:
-            logger.exception('sync apply failed')
-            progress_queue.put({'step': 'error', 'message': str(e)})
+                emit({'step': 'error', 'message': 'Sync falló'})
+        finally:
+            _op_cm.__exit__(None, None, None)
 
-    threading.Thread(target=_run, daemon=True).start()
-
-    def _generate():
-        while True:
-            try:
-                event = progress_queue.get(timeout=600)
-                yield f"data: {json.dumps(event)}\n\n"
-                if event.get('step') in ('done', 'error'):
-                    break
-            except queue.Empty:
-                yield f"data: {json.dumps({'step': 'error', 'message': 'Timeout'})}\n\n"
-                break
-
-    return Response(
-        stream_with_context(_generate()),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    return sse_response(_work, timeout_s=600)
 
 
 @app.route('/api/source/folder/<folder_name>/completed', methods=['PUT'])

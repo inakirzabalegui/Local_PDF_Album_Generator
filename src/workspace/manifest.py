@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from src.workspace.atomic_yaml import write as _atomic_write_yaml
 
 logger = logging.getLogger("album")
 
@@ -109,12 +110,9 @@ def read_page_manifest(page_folder: Path) -> PageManifest | None:
 
 
 def write_page_manifest(manifest: PageManifest) -> Path:
-    """Write manifest to <folder>/.photo_manifest.yaml."""
+    """Write manifest to <folder>/.photo_manifest.yaml atomically (via atomic_yaml)."""
     path = manifest.folder / MANIFEST_FILENAME
-    data = manifest.to_dict()
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
-    return path
+    return _atomic_write_yaml(path, manifest.to_dict(), sort_keys=False)
 
 
 def remove_photo_from_manifest(page_folder: Path, image_name: str) -> bool:

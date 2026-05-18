@@ -11,12 +11,15 @@ from scratch).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import random
 import re
 import shutil
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,7 +53,6 @@ from src.workspace.manifest import (
 from src.workspace.reconciler import _sub_group_from_source_path
 from src.workspace.tombstones import (
     read_tombstones,
-    remove_tombstone,
     rewrite_section_paths as rewrite_tombstone_section_paths,
 )
 
@@ -97,12 +99,31 @@ class RemovedSection:
 
 
 @dataclass
+class RecoveredSection:
+    section_id: str
+    source_group: str
+    title: str
+    date: str          # DD/MM/YYYY
+    page_count: int    # how many workspace pages were re-associated
+
+
+@dataclass
+class AmbiguousSection:
+    title: str           # workspace section title (for display)
+    date: str            # DD/MM/YYYY
+    candidate_groups: list[str]  # source group names that share that date
+    page_count: int
+
+
+@dataclass
 class SyncDiff:
     added_photos: list[AddedPhoto] = field(default_factory=list)
     removed_photos: list[RemovedPhoto] = field(default_factory=list)
     renamed_sections: list[RenamedSection] = field(default_factory=list)
     new_sections: list[NewSection] = field(default_factory=list)
     removed_sections: list[RemovedSection] = field(default_factory=list)
+    recovered_sections: list["RecoveredSection"] = field(default_factory=list)
+    ambiguous_sections: list["AmbiguousSection"] = field(default_factory=list)
     has_manifests: bool = True
 
     def is_empty(self) -> bool:
@@ -114,9 +135,41 @@ class SyncDiff:
             and not self.removed_sections
         )
 
+    def compute_hash(self) -> str:
+        """Stable hash of the diff content. Equal diffs → equal hash regardless
+        of list ordering. Used to detect source-side drift between
+        preview and apply (A2/C4): apply recomputes and refuses to proceed if
+        the hash differs from what the user confirmed."""
+        canonical = {
+            "added_photos": sorted(
+                (a.section_id, a.source_rel) for a in self.added_photos
+            ),
+            "removed_photos": sorted(
+                (r.page_folder, r.image_name, r.source_rel) for r in self.removed_photos
+            ),
+            "renamed_sections": sorted(
+                (rn.section_id, rn.old_title, rn.new_title) for rn in self.renamed_sections
+            ),
+            "new_sections": sorted(
+                (ns.section_id, ns.source_group, ns.photo_count) for ns in self.new_sections
+            ),
+            "removed_sections": sorted(
+                (rs.section_id, rs.page_count) for rs in self.removed_sections
+            ),
+            "recovered_sections": sorted(
+                (r.section_id, r.source_group) for r in self.recovered_sections
+            ),
+            "ambiguous_sections": sorted(
+                (a.title, a.date, tuple(sorted(a.candidate_groups))) for a in self.ambiguous_sections
+            ),
+        }
+        payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def to_dict(self) -> dict:
         return {
             "has_manifests": self.has_manifests,
+            "hash": self.compute_hash(),
             "added_photos": [
                 {"source_rel": a.source_rel, "source_group": a.source_group}
                 for a in self.added_photos
@@ -150,12 +203,22 @@ class SyncDiff:
                 {"section_id": rs.section_id, "title": rs.title, "page_count": rs.page_count}
                 for rs in self.removed_sections
             ],
+            "recovered_sections": [
+                {"section_id": r.section_id, "source_group": r.source_group, "title": r.title, "date": r.date, "page_count": r.page_count}
+                for r in self.recovered_sections
+            ],
+            "ambiguous_sections": [
+                {"title": a.title, "date": a.date, "candidate_groups": list(a.candidate_groups), "page_count": a.page_count}
+                for a in self.ambiguous_sections
+            ],
             "summary": {
                 "added": len(self.added_photos),
                 "removed": len(self.removed_photos),
                 "renamed": len(self.renamed_sections),
                 "new_sections": len(self.new_sections),
                 "removed_sections": len(self.removed_sections),
+                "recovered": len(self.recovered_sections),
+                "ambiguous": len(self.ambiguous_sections),
             },
         }
 
@@ -176,17 +239,23 @@ def _read_meta(folder: Path) -> dict:
 
 
 def _write_meta(folder: Path, data: dict) -> None:
-    import yaml
+    from src.workspace.atomic_yaml import write as _atomic_write
     meta_path = folder / ".album_meta.yaml"
     try:
-        with open(meta_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(data, f, allow_unicode=True)
+        _atomic_write(meta_path, data)
     except Exception as e:
         logger.error(f"Failed writing meta {meta_path}: {e}")
 
 
-def _ensure_source_section_id(source_root: Path, group: str) -> tuple[str, bool]:
-    """Return (section_id, was_new). Persist to .album_meta.yaml of group folder."""
+def _ensure_source_section_id(
+    source_root: Path, group: str, write: bool = True
+) -> tuple[str, bool]:
+    """Return (section_id, was_new). Persist to .album_meta.yaml only when ``write``.
+
+    Set ``write=False`` from read-only paths (e.g. preview diff) so the operation
+    does not mutate source-side state — preventing two concurrent preview calls
+    from writing conflicting UUIDs into the same .album_meta.yaml.
+    """
     folder = source_root / group
     if not folder.is_dir():
         return uuid.uuid4().hex, True
@@ -195,8 +264,9 @@ def _ensure_source_section_id(source_root: Path, group: str) -> tuple[str, bool]
     if sid:
         return sid, False
     sid = uuid.uuid4().hex
-    meta["section_id"] = sid
-    _write_meta(folder, meta)
+    if write:
+        meta["section_id"] = sid
+        _write_meta(folder, meta)
     return sid, True
 
 
@@ -238,7 +308,7 @@ def _backfill_workspace_section_ids(
             if group_dir.name.lower() in ("portada", "contraportada"):
                 continue
             title = build_section_title(group_dir.name)
-            sid, _ = _ensure_source_section_id(source_root, group_dir.name)
+            sid, _ = _ensure_source_section_id(source_root, group_dir.name, write=persist)
             title_to_sid[title] = sid
 
     recovered: list[PageConfig] = []
@@ -258,6 +328,104 @@ def _backfill_workspace_section_ids(
         except Exception as exc:
             logger.warning(f"Failed persisting recovered section_ids: {exc}")
     return changed
+
+
+def _recover_section_ids_by_date(
+    source_root: Path,
+    pages: list[PageConfig],
+    source_groups: list[str],
+    persist_to_meta: bool = False,
+) -> tuple[list["RecoveredSection"], list["AmbiguousSection"]]:
+    """For workspace pages that still lack section_id after title-match
+    backfill, attempt to recover by matching the date prefix (YYYYMMDD) of
+    source folder names against the page's section_date (DD/MM/YYYY).
+
+    Rules:
+    - Date must be parseable from the source folder name via
+      extract_date_from_folder().
+    - Page's section_date must equal that date.
+    - If exactly ONE source folder has that date AND that folder isn't
+      already matched to a different section_id, recover.
+    - If multiple source folders share the date AND multiple workspace
+      sections share the date, treat as ambiguous (no recovery).
+    - persist_to_meta=True writes the recovered section_id back to the
+      source's .album_meta.yaml via _ensure_source_section_id(write=True).
+      Preview must call with persist_to_meta=False.
+    """
+    recovered: list[RecoveredSection] = []
+    ambiguous: list[AmbiguousSection] = []
+
+    if not source_root.is_dir():
+        return recovered, ambiguous
+
+    # source_date_to_groups: DD/MM/YYYY → list of source group names with that date
+    source_date_to_groups: dict[str, list[str]] = {}
+    for group in source_groups:
+        date = extract_date_from_folder(group)
+        if not date:
+            continue
+        source_date_to_groups.setdefault(date, []).append(group)
+
+    # Identify orphan pages (no section_id, not cover/backcover).
+    orphan_pages = [
+        p for p in pages
+        if not (p.is_cover or p.is_backcover) and not p.section_id
+    ]
+    if not orphan_pages:
+        return recovered, ambiguous
+
+    # Group orphan pages by their section_date (DD/MM/YYYY).
+    # Pages within the same orphan "section" share both section_date and title.
+    orphan_groups_by_date: dict[str, dict[str, list[PageConfig]]] = {}
+    for p in orphan_pages:
+        date = getattr(p, "section_date", "") or ""
+        if not date:
+            continue
+        title = p.section_titles[0] if p.section_titles else ""
+        orphan_groups_by_date.setdefault(date, {}).setdefault(title, []).append(p)
+
+    # Track which source groups got bound this pass to avoid binding the same
+    # source group to two different orphan sections.
+    bound_groups: set[str] = set()
+
+    for date, title_to_pages in orphan_groups_by_date.items():
+        candidates = source_date_to_groups.get(date, [])
+        # Filter out source groups already bound (extra safety).
+        available = [g for g in candidates if g not in bound_groups]
+        n_orphan_sections = len(title_to_pages)
+
+        if len(available) == 1 and n_orphan_sections == 1:
+            # Unambiguous match: one orphan section, one source candidate.
+            source_group = available[0]
+            title, group_pages = next(iter(title_to_pages.items()))
+            sid, _was_new = _ensure_source_section_id(
+                source_root, source_group, write=persist_to_meta,
+            )
+            for gp in group_pages:
+                gp.section_id = sid
+            bound_groups.add(source_group)
+            recovered.append(RecoveredSection(
+                section_id=sid,
+                source_group=source_group,
+                title=title,
+                date=date,
+                page_count=len(group_pages),
+            ))
+        elif len(candidates) >= 1 and n_orphan_sections >= 1:
+            # Ambiguous: multiple candidates or multiple orphan sections on same date.
+            for title, group_pages in title_to_pages.items():
+                logger.warning(
+                    f"Ambiguous section recovery for date {date} title '{title}': "
+                    f"candidates={candidates}"
+                )
+                ambiguous.append(AmbiguousSection(
+                    title=title,
+                    date=date,
+                    candidate_groups=list(candidates),
+                    page_count=len(group_pages),
+                ))
+
+    return recovered, ambiguous
 
 
 def _folder_section_id_lookup(pages: list[PageConfig]) -> dict[str, str]:
@@ -310,40 +478,122 @@ def _apply_rewrite(path: str, section_id: str, rewrite_map: dict[tuple[str, str]
     return f"{new_prefix}/{tail}"
 
 
+@dataclass
+class SyncSession:
+    """Captured source+workspace state for one sync operation.
+
+    Built once at the start of compute_diff or apply, reused throughout so
+    we don't re-scan the source filesystem multiple times. Also gives us a
+    single place that knows about the persist/no-persist asymmetry between
+    preview and apply: a session created with persist_writes=False refuses
+    to mutate source-side meta (A1).
+    """
+    source_root: Path
+    workspace: Path
+    cfg: GlobalConfig
+    pages: list[PageConfig]
+    sorted_photos: list["PhotoInfo"]
+    source_groups: dict[str, list["PhotoInfo"]]
+    group_to_sid: dict[str, str]
+    sid_to_pages: dict[str, list[PageConfig]]
+    manifests: list[PageManifest]
+    folder_to_sid: dict[str, str]
+    rewrite_map: dict[tuple[str, str], str]
+    rel_to_photo: dict[str, "PhotoInfo"]  # full source-rel-path → PhotoInfo
+    persist_writes: bool  # False for preview, True for apply
+
+    @classmethod
+    def capture(
+        cls, source_root: Path, workspace: Path, *, persist_writes: bool,
+    ) -> "SyncSession":
+        """Read source + workspace state once.
+
+        persist_writes=False makes this safe for preview (no .album_meta.yaml
+        writes, no page_config.yaml rewrites for section_id backfill).
+        """
+        cfg = read_global_config(workspace)
+        pages = read_page_configs(workspace, cfg)
+        if source_root.is_dir():
+            _backfill_workspace_section_ids(
+                workspace, pages, source_root, persist=persist_writes,
+            )
+        scan = scan_directory(source_root)
+        sorted_photos = sort_photos(scan.photos)
+        source_groups: dict[str, list["PhotoInfo"]] = {}
+        for ph in sorted_photos:
+            source_groups.setdefault(ph.source_group, []).append(ph)
+        group_to_sid: dict[str, str] = {}
+        for group in source_groups:
+            sid, _ = _ensure_source_section_id(
+                source_root, group, write=persist_writes,
+            )
+            group_to_sid[group] = sid
+        manifests = collect_workspace_manifests(workspace)
+        folder_to_sid = _folder_section_id_lookup(pages)
+        rewrite_map = _compute_path_rewrite_map(manifests, group_to_sid, folder_to_sid)
+        rel_to_photo = {
+            relative_source_path(source_root, ph.path): ph for ph in sorted_photos
+        }
+        sid_to_pages = _section_id_to_workspace_pages(pages)
+        return cls(
+            source_root=source_root,
+            workspace=workspace,
+            cfg=cfg,
+            pages=pages,
+            sorted_photos=sorted_photos,
+            source_groups=source_groups,
+            group_to_sid=group_to_sid,
+            sid_to_pages=sid_to_pages,
+            manifests=manifests,
+            folder_to_sid=folder_to_sid,
+            rewrite_map=rewrite_map,
+            rel_to_photo=rel_to_photo,
+            persist_writes=persist_writes,
+        )
+
+
 def compute_sync_diff(source_root: Path, workspace: Path) -> SyncDiff:
     """Compare source vs workspace. Returns SyncDiff. Does NOT mutate state."""
-    diff = SyncDiff(has_manifests=workspace_has_manifests(workspace))
+    session = SyncSession.capture(source_root, workspace, persist_writes=False)
+    return _build_diff_from_session(session)
 
-    cfg = read_global_config(workspace)
-    pages = read_page_configs(workspace, cfg)
 
-    if source_root.is_dir():
-        _backfill_workspace_section_ids(workspace, pages, source_root)
+def _build_diff_from_session(session: SyncSession) -> SyncDiff:
+    """Compute SyncDiff from a captured SyncSession.
 
-    scan = scan_directory(source_root)
-    sorted_photos = sort_photos(scan.photos)
+    Logic copied verbatim from the previous monolithic compute_sync_diff,
+    but reads precomputed state from `session` instead of re-scanning the
+    source filesystem.
+    """
+    diff = SyncDiff(has_manifests=workspace_has_manifests(session.workspace))
 
-    # Group source photos by source_group
-    source_groups: dict[str, list["PhotoInfo"]] = {}
-    for ph in sorted_photos:
-        source_groups.setdefault(ph.source_group, []).append(ph)
+    source_root = session.source_root
+    workspace = session.workspace
+    pages = session.pages
+    source_groups = session.source_groups
+    group_to_sid = session.group_to_sid
+    manifests = session.manifests
+    folder_to_sid = session.folder_to_sid
+    rewrite_map = session.rewrite_map
+    rel_to_photo = session.rel_to_photo
+    sid_to_pages = session.sid_to_pages
 
-    # Resolve section_id for each source group
-    group_to_sid: dict[str, str] = {}
-    for group in source_groups:
-        sid, _ = _ensure_source_section_id(source_root, group)
-        group_to_sid[group] = sid
+    # Date-prefix fallback: for any workspace pages still missing section_id
+    # after title-based backfill, attempt to recover by matching the source
+    # folder's date prefix against the page's section_date. Preview is
+    # read-only so persist_to_meta=False.
+    recovered, ambiguous = _recover_section_ids_by_date(
+        source_root, pages, list(source_groups.keys()), persist_to_meta=False,
+    )
+    diff.recovered_sections = recovered
+    diff.ambiguous_sections = ambiguous
 
-    sid_to_pages = _section_id_to_workspace_pages(pages)
     sid_to_existing_titles: dict[str, str] = {
         sid: (group_pages[0].section_titles[0] if group_pages and group_pages[0].section_titles else "")
         for sid, group_pages in sid_to_pages.items()
     }
 
     # Build set of source rel paths currently in workspace manifests
-    manifests = collect_workspace_manifests(workspace)
-    folder_to_sid = _folder_section_id_lookup(pages)
-    rewrite_map = _compute_path_rewrite_map(manifests, group_to_sid, folder_to_sid)
     tombstones_raw = read_tombstones(workspace)
     # Rewrite tombstone paths in memory so they match current source paths after
     # the user renamed the source folder of a section.
@@ -361,12 +611,7 @@ def compute_sync_diff(source_root: Path, workspace: Path) -> SyncDiff:
             manifest_source_paths.add(rewritten)
 
     # Build set of source rel paths currently on disk
-    source_rel_set: set[str] = set()
-    rel_to_photo: dict[str, "PhotoInfo"] = {}
-    for ph in sorted_photos:
-        rel = relative_source_path(source_root, ph.path)
-        source_rel_set.add(rel)
-        rel_to_photo[rel] = ph
+    source_rel_set: set[str] = set(rel_to_photo.keys())
 
     # Added photos: in source, not in manifests, not tombstoned
     for rel, ph in rel_to_photo.items():
@@ -507,8 +752,55 @@ def apply_sync(
     workspace: Path,
     diff: SyncDiff,
     progress_callback=None,
+    atomic: bool = True,
 ) -> bool:
-    """Apply a previously computed SyncDiff to the workspace.
+    """Apply a previously computed SyncDiff to the workspace atomically (C1).
+
+    When ``atomic=True`` (default), a snapshot of the workspace is created
+    before any mutation; on exception the snapshot is restored, leaving the
+    workspace in its pre-sync state. On success the snapshot is discarded.
+
+    Set ``atomic=False`` only for tests or when snapshotting itself is
+    impossible (e.g. read-only sibling filesystem).
+    """
+    logger.info(
+        "apply_sync start: workspace=%s atomic=%s "
+        "added=%d removed=%d renamed=%d new_sections=%d removed_sections=%d",
+        workspace.name, atomic,
+        len(diff.added_photos), len(diff.removed_photos),
+        len(diff.renamed_sections), len(diff.new_sections),
+        len(diff.removed_sections),
+    )
+
+    if not atomic:
+        ok = _apply_sync_unsafe(source_root, workspace, diff, progress_callback)
+        logger.info("apply_sync done (non-atomic): success=%s", ok)
+        return ok
+
+    from src.workspace.workspace_transaction import workspace_transaction
+    try:
+        with workspace_transaction(workspace):
+            result = _apply_sync_unsafe(source_root, workspace, diff, progress_callback)
+            if not result:
+                # Trigger rollback by raising — workspace_transaction will restore.
+                raise RuntimeError("_apply_sync_unsafe returned False")
+    except RuntimeError as e:
+        if "returned False" in str(e):
+            logger.warning("apply_sync: unsafe returned False, workspace rolled back")
+            return False
+        raise
+
+    logger.info("apply_sync done: success=True (snapshot discarded)")
+    return True
+
+
+def _apply_sync_unsafe(
+    source_root: Path,
+    workspace: Path,
+    diff: SyncDiff,
+    progress_callback=None,
+) -> bool:
+    """Non-atomic implementation. See apply_sync() for the safe wrapper.
 
     Strategy:
     - Remove obsolete photos (rebalance NOT applied — preserves splits).
@@ -525,27 +817,37 @@ def apply_sync(
         if progress_callback:
             progress_callback(event)
 
-    cfg = read_global_config(workspace)
-    pages = read_page_configs(workspace, cfg)
-    _backfill_workspace_section_ids(workspace, pages, source_root)
+    # Capture source + workspace state ONCE. Replaces the previous setup
+    # block (read_global_config + read_page_configs + backfill +
+    # scan_directory + group_to_sid build + manifest collection) which used
+    # to be duplicated across compute_sync_diff and _apply_sync_unsafe and
+    # additionally re-run inside steps 0/4/5. persist_writes=True because
+    # apply is allowed to mutate .album_meta.yaml (A1).
+    session = SyncSession.capture(source_root, workspace, persist_writes=True)
+    cfg = session.cfg
+    pages = session.pages
+    # Date-prefix fallback: persist recovered section_ids to source meta so
+    # subsequent syncs can match by section_id (the primary key) instead of
+    # falling back again.
+    if source_root.is_dir():
+        _source_group_names = [
+            d.name for d in source_root.iterdir()
+            if d.is_dir() and d.name.lower() not in ("portada", "contraportada")
+        ]
+        _recover_section_ids_by_date(
+            source_root, pages, _source_group_names, persist_to_meta=True,
+        )
 
     max_per_page = cfg.photos_per_page_max
 
     # ── 0. Persist source-path rewrites for renamed sections ────────────
     # Same logic used in compute_sync_diff; this writes the new prefix to disk
     # so manifests and tombstones stay in sync with the source on apply.
-    scan_for_rewrite = scan_directory(source_root)
-    group_to_sid_apply: dict[str, str] = {}
-    for ph in scan_for_rewrite.photos:
-        if ph.source_group not in group_to_sid_apply:
-            sid, _ = _ensure_source_section_id(source_root, ph.source_group)
-            group_to_sid_apply[ph.source_group] = sid
-
-    manifests_for_rewrite = collect_workspace_manifests(workspace)
-    folder_to_sid_apply = _folder_section_id_lookup(pages)
-    rewrite_map_apply = _compute_path_rewrite_map(
-        manifests_for_rewrite, group_to_sid_apply, folder_to_sid_apply,
-    )
+    # Sourced from the session — no extra scan_directory call.
+    group_to_sid_apply = session.group_to_sid
+    manifests_for_rewrite = session.manifests
+    folder_to_sid_apply = session.folder_to_sid
+    rewrite_map_apply = session.rewrite_map
     if rewrite_map_apply:
         for m in manifests_for_rewrite:
             sid = m.section_id or folder_to_sid_apply.get(m.folder.name, "")
@@ -561,19 +863,23 @@ def apply_sync(
             rewrite_tombstone_section_paths(workspace, sid, old_prefix, new_prefix)
 
     # ── 1. Remove obsolete photos ────────────────────────────────────────
-    _cb({"step": "removing_photos", "total": len(diff.removed_photos)})
+    # Order: manifest update FIRST (atomic via tempfile+replace), unlink LAST.
+    # If a crash happens between them, we leave an orphan file on disk (cheap
+    # to clean up later) rather than a manifest entry pointing to a missing
+    # file (which pollutes future diffs and weight calculations). A3.
+    _cb({"step": "removing_photos", "current": 0, "total": len(diff.removed_photos)})
     for i, rp in enumerate(diff.removed_photos, 1):
         page_dir = workspace / rp.page_folder
         if not page_dir.exists():
             continue
         img_path = page_dir / rp.image_name
         try:
-            if img_path.exists():
-                img_path.unlink()
             manifest = read_page_manifest(page_dir)
             if manifest and rp.image_name in manifest.photos:
                 del manifest.photos[rp.image_name]
                 write_page_manifest(manifest)
+            if img_path.exists():
+                img_path.unlink()
         except Exception as e:
             logger.warning(f"Failed removing {img_path}: {e}")
         _cb({"step": "removing_photos", "current": i, "total": len(diff.removed_photos)})
@@ -586,6 +892,27 @@ def apply_sync(
     pages = read_page_configs(workspace, cfg)
     _backfill_workspace_section_ids(workspace, pages, source_root)
     titles_changed = False
+
+    # ── 1b. Scrub dangling featured/hero references for pages whose photos
+    # were removed in step 1. Without this, page_config.yaml retains entries
+    # pointing to image_names that no longer exist on disk, polluting weight
+    # calculations and future diffs.
+    removed_by_folder: dict[str, set[str]] = {}
+    for rp in diff.removed_photos:
+        removed_by_folder.setdefault(rp.page_folder, set()).add(rp.image_name)
+    if removed_by_folder:
+        for p in pages:
+            removed_names = removed_by_folder.get(p.folder.name)
+            if not removed_names:
+                continue
+            new_featured = [n for n in p.featured_photos if n not in removed_names]
+            new_hero = [n for n in p.hero_photos if n not in removed_names]
+            if new_featured != list(p.featured_photos):
+                p.featured_photos = new_featured
+                titles_changed = True
+            if new_hero != list(p.hero_photos):
+                p.hero_photos = new_hero
+                titles_changed = True
 
     # ── 2a. Backfill sub_group_ids for legacy pages (pre-2026-05-10 workspaces) ──
     # Pages created before sub_group_ids was introduced have an empty list.
@@ -622,7 +949,10 @@ def apply_sync(
         else:
             top_title = ""
         new_titles = [top_title] if top_title else []
-        if p.sub_group_ids:
+        # B1: respect a user-set subtitle override; otherwise derive from FS.
+        if p.section_subtitle_override:
+            new_titles.append(p.section_subtitle_override)
+        elif p.sub_group_ids:
             sub_label = " / ".join(prettify_folder_name(s) for s in p.sub_group_ids)
             new_titles.append(sub_label)
         if list(p.section_titles) != new_titles:
@@ -645,15 +975,15 @@ def apply_sync(
 
     # ── 4. Add new photos to existing sections ──────────────────────────
     if diff.added_photos:
-        _cb({"step": "adding_photos", "total": len(diff.added_photos)})
+        _cb({"step": "adding_photos", "current": 0, "total": len(diff.added_photos)})
+        # Re-read pages: steps 1/2/3 may have written to disk.
         pages = read_page_configs(workspace, cfg)
         _backfill_workspace_section_ids(workspace, pages, source_root)
         sid_to_pages = _section_id_to_workspace_pages(pages)
 
-        # Group additions by section_id and source_group, preserving sort order
-        scan = scan_directory(source_root)
-        sorted_photos = sort_photos(scan.photos)
-        rel_to_photo = {relative_source_path(source_root, ph.path): ph for ph in sorted_photos}
+        # Group additions by section_id and source_group, preserving sort
+        # order. Sourced from the session — no re-scan of the source tree.
+        rel_to_photo = session.rel_to_photo
 
         existing_sids = set(sid_to_pages.keys())
         added_in_existing: dict[str, list[AddedPhoto]] = {}
@@ -671,13 +1001,19 @@ def apply_sync(
             title_slug = title_slug_match.group(1) if title_slug_match else "page"
             section_titles = list(target_page.section_titles)
             layout_mode = target_page.layout_mode
+            # Cached image sequence counter for target_page — avoids rescanning
+            # the folder on every iteration (A13: was O(n²) in photos added).
+            # None means "not yet computed for the current target_page".
+            next_seq: int | None = None
 
-            # Sort additions chronologically
+            # Sort additions chronologically (EXIF date) so new photos land in
+            # the right temporal slot. Photos without EXIF date sink to the end.
             ordered = []
             for ap in additions:
                 ph = rel_to_photo.get(ap.source_rel)
                 if ph is not None:
                     ordered.append((ph, ap))
+            ordered.sort(key=lambda t: getattr(t[0], "date_taken", None) or datetime.max)
 
             for ph, ap in ordered:
                 manifest = read_page_manifest(target_page.folder) or PageManifest(
@@ -705,6 +1041,7 @@ def apply_sync(
                     write_page_configs([new_pc])
                     target_page = new_pc
                     manifest = PageManifest(folder=new_dir, section_id=sid)
+                    next_seq = 1  # fresh page → start at img_001
                 else:
                     # Append sub_group to target_page if photo introduces a new one
                     sg = getattr(ph, "sub_group", "") or ""
@@ -713,12 +1050,18 @@ def apply_sync(
                         # rebuild title[1]
                         top = target_page.section_titles[0] if target_page.section_titles else ""
                         new_titles = [top] if top else []
-                        if target_page.sub_group_ids:
+                        if target_page.section_subtitle_override:
+                            # B1: override wins even when sub_group shape changes
+                            new_titles.append(target_page.section_subtitle_override)
+                        elif target_page.sub_group_ids:
                             new_titles.append(" / ".join(prettify_folder_name(s) for s in target_page.sub_group_ids))
                         target_page.section_titles = new_titles
                         write_page_configs([target_page])
 
-                seq = _next_image_seq(target_page.folder)
+                if next_seq is None:
+                    next_seq = _next_image_seq(target_page.folder)
+                seq = next_seq
+                next_seq += 1
                 ext = ph.path.suffix.lower()
                 if ext not in (".jpg", ".jpeg"):
                     ext = ".jpg"
@@ -738,17 +1081,14 @@ def apply_sync(
 
     # ── 5. Create new sections (chronological insertion) ────────────────
     if diff.new_sections:
-        _cb({"step": "adding_sections", "total": len(diff.new_sections)})
+        _cb({"step": "adding_sections", "current": 0, "total": len(diff.new_sections)})
         # Sort new sections chronologically by source_group date prefix
         new_sorted = sorted(
             diff.new_sections, key=lambda ns: _section_chronological_key(ns.source_group)
         )
 
-        scan = scan_directory(source_root)
-        sorted_photos = sort_photos(scan.photos)
-        group_photos: dict[str, list["PhotoInfo"]] = {}
-        for ph in sorted_photos:
-            group_photos.setdefault(ph.source_group, []).append(ph)
+        # Sourced from the session — no re-scan of the source tree.
+        group_photos = session.source_groups
 
         layout_modes = ["mesa_de_luz", "grid_compacto", "hibrido"]
 
