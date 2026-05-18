@@ -92,13 +92,23 @@ Launch --app → Launcher (pick folder) → Bootstrap (check/create _album) → 
 
 ### Editor Keyboard Shortcuts
 
-| Key | Action |
-|---|---|
-| `D` | Delete selected photo (both tabs) |
-| `C` | Toggle Completado / Pendiente for current event or page |
-| `↑` / `↓` | Navigate photos or panel items |
-| `←` / `→` | Switch focus between panel and photo list |
-| `Cmd/Ctrl + S` | Save changes (Edición tab) |
+| Key | Action | Scope |
+|---|---|---|
+| `?` / `F1` | Open / close help | Global |
+| `Esc` | Close modal / dialog / viewer | Global |
+| `↑` / `↓` | Navigate photos or panel items | Fuente · Edición |
+| `←` | Focus photos→panel; Edición: also go to previous page | Fuente · Edición |
+| `→` | Focus panel→photos; Edición: also go to next page | Fuente · Edición |
+| `Cmd/Ctrl` + `↑`/`↓` | Jump to next completed/pending state change in panel | Edición |
+| `C` | Toggle Completado / Pendiente for current event or page | Fuente · Edición |
+| `R` | Rename event (opens inline input) | Fuente |
+| `V` | Open full-screen photo viewer (↑/↓ navigate, D delete) | Fuente · Edición |
+| `X` | Delete entire event with confirmation prompt | Fuente |
+| `D` | Delete selected photo; also deletes current photo when viewer is open | Fuente · Edición |
+| `S` | Full-screen page view (↑/↓/←/→ navigate, V photos, L layout) | Edición |
+| `A` | Shuffle photos randomly on current page (also works in Show view) | Edición |
+| `L` / `Shift+L` | Next / previous layout mode (mesa_de_luz → grid_compacto → hibrido) | Edición |
+| `E` | Explode page into two (useful when page has too many photos) | Edición |
 
 ## Frontend Aesthetics
 

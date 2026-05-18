@@ -187,28 +187,36 @@ python make_album.py --app
 Esto abre una aplicación web con dos pestañas:
 
 1. **Pestaña "Fuente"**: Administra las carpetas de fotos originales
-   - Navega por los eventos (subcarpetas de fotos)
-   - Visualiza fotos directamente desde el disco
-   - Renombra eventos (y renumera automáticamente todas las fotos)
-   - Borra fotos o eventos completos
-   - Regenera el workspace del álbum desde cero
+   - Navega por los eventos (subcarpetas de fotos) con `↑`/`↓`
+   - Visualiza fotos directamente desde el disco; abre el visor con `V`
+   - Renombra eventos con `R` (renumera todas las fotos automáticamente)
+   - Borra fotos individuales con `D`; borra un evento completo con `X`
+   - Marca eventos como revisados con `C` (punto verde, ítem atenuado)
+   - **Sincronizar** (botón 🔄 en la cabecera): detecta fotos nuevas o eliminadas en el origen y actualiza el workspace sin perder ediciones manuales (layouts, títulos, fotos destacadas)
+   - Regenera el workspace desde cero con "Regenerar Álbum"
 
 2. **Pestaña "Edición"**: Edita el álbum generado
-   - Reordena fotos dentro de páginas (drag-and-drop)
+   - Reordena fotos dentro de páginas (drag-and-drop o `↑`/`↓`)
    - Mueve fotos entre páginas
-   - Borra fotos o páginas completas
-   - Edita títulos de página
-   - Elige el modo de layout para cada página (`mesa_de_luz`, `grid_compacto`, `hibrido`)
-   - Añade subtítulos a fotos
+   - Borra fotos con `D` o páginas completas
+   - Edita títulos y subtítulos de página
+   - Elige el modo de layout con `L`/`Shift+L` (`mesa_de_luz`, `grid_compacto`, `hibrido`)
+   - Baraja fotos aleatoriamente con `A`
+   - Explota una página en dos con `E` (útil si hay demasiadas fotos)
    - Visualiza preview en PDF de cada página
+   - Abre el visor de foto a pantalla completa con `V`
+   - Abre la vista de página a pantalla completa con `S`
+   - Marca páginas como revisadas con `C`
 
 **Flujo recomendado:**
-1. Ejecuta `python make_album.py --app` o `./app_album.sh`
+1. Ejecuta `./app_album.sh` o `python make_album.py --app`
 2. Pulsa "Abrir Carpeta" y selecciona tu directorio de fotos
 3. El app detecta si existe workspace `_album` hermano; si no, lo crea
-4. Usa la pestaña "Fuente" para organizar eventos y fotos si es necesario
-5. Usa la pestaña "Edición" para ajustar el álbum visual
-6. Finaliza con `python make_album.py --render /ruta/a/workspace` para generar el PDF final
+4. Usa la pestaña "Fuente" para revisar, renombrar y depurar eventos
+5. Pulsa "Regenerar Álbum" para crear el workspace inicial
+6. Vuelve a "Fuente" y pulsa "Sincronizar" cada vez que añadas o elimines fotos del origen
+7. Usa la pestaña "Edición" para ajustar layouts, títulos y marcar páginas como completadas
+8. Finaliza con `python make_album.py --render /ruta/a/workspace` para generar el PDF
 
 **Características de persistencia y navegación:**
 
@@ -404,20 +412,42 @@ python make_album.py --edit /ruta/al/workspace
 
 | Acción | Descripción |
 |--------|-------------|
-| **Reordenar fotos** | Drag-and-drop para cambiar el orden, regenera layout automáticamente |
-| **Borrar foto** | Selecciona una foto de la lista y bórrala, el layout se ajusta |
+| **Reordenar fotos** | Drag-and-drop para cambiar el orden; el layout se regenera automáticamente |
+| **Borrar foto** | Selecciona una foto de la lista y bórrala con `D`; el layout se ajusta |
 | **Borrar página** | Elimina página completa del álbum |
 | **Editar título** | Modifica el título de sección que aparece en la página |
-| **Regenerar preview** | Fuerza regeneración del PDF de vista previa |
-| **Navegación** | Botones o flechas de teclado para moverse entre páginas |
+| **Cambiar layout** | Alterna entre Mesa de Luz, Grid Compacto e Híbrido con `L` / `Shift+L` |
+| **Reordenar aleatorio** | Tecla `A` para barajar las fotos de la página actual |
+| **Explotar página** | Tecla `E` divide una página con demasiadas fotos en dos |
+| **Visor pantalla completa** | Tecla `V` para ver la foto a pantalla completa; navega con `↑`/`↓`, borra con `D` |
+| **Vista de página** | Tecla `S` para ver la página renderizada a pantalla completa |
+| **Marcar completado** | Tecla `C` marca el evento o página actual como revisado |
 
 **Características:**
 - **Auto-guardado**: Todos los cambios se guardan automáticamente en el workspace
-- **Vista previa PDF**: Preview en tiempo real del resultado final después de cada cambio
-- **Interfaz web**: Se abre automáticamente en tu navegador en `http://localhost:5050`
+- **Interfaz web**: Se abre en el navegador en `http://localhost:5050`
 - **Multi-página**: Edita cualquier página del álbum sin cerrar el editor
-- **Atajos de teclado**: `←`/`→` para navegar, `Cmd+S` como recordatorio de guardado, `D` para borrar foto seleccionada, `C` para marcar/desmarcar la página o evento actual como "Completado"
-- **Estado de revisión**: el botón "Completado" (o la tecla `C`) marca un evento/página como revisado. Aparece una bolita verde en la esquina del ítem en el panel lateral. Los ítems completados se atenúan para destacar lo pendiente. El estado se persiste en `page_config.yaml` (páginas) y `.album_meta.yaml` (eventos fuente)
+- **Estado de revisión**: La tecla `C` (o botón "Completado") marca un evento/página como revisado con una bolita verde. Los ítems completados se atenúan para destacar lo pendiente. Estado persistido en `page_config.yaml` (páginas) y `.album_meta.yaml` (eventos)
+
+**Atajos de teclado completos:**
+
+| Tecla | Acción | Ámbito |
+|---|---|---|
+| `?` / `F1` | Abrir / cerrar ayuda | Global |
+| `Esc` | Cerrar modal / diálogo / visor | Global |
+| `↑` / `↓` | Navegar fotos o panel | Fuente · Edición |
+| `←` | Foco fotos→panel; en Edición también va a página anterior | Fuente · Edición |
+| `→` | Foco panel→fotos; en Edición también va a página siguiente | Fuente · Edición |
+| `Cmd/Ctrl` + `↑`/`↓` | Saltar al siguiente item completado/pendiente en el panel | Edición |
+| `C` | Marcar / desmarcar Completado en evento o página actual | Fuente · Edición |
+| `R` | Renombrar evento (abre campo de edición inline) | Fuente |
+| `V` | Abrir visor a pantalla completa (↑/↓ navega, D borra) | Fuente · Edición |
+| `X` | Borrar evento completo (pide confirmación) | Fuente |
+| `D` | Borrar foto seleccionada; también borra foto actual si el visor está abierto | Fuente · Edición |
+| `S` | Vista de página a pantalla completa (↑/↓/←/→ navega, V fotos, L layout) | Edición |
+| `A` | Reordenar fotos aleatoriamente en la página actual (también funciona en Show) | Edición |
+| `L` / `Shift+L` | Siguiente / anterior modo de layout | Edición |
+| `E` | Explotar página en dos (útil si hay demasiadas fotos) | Edición |
 
 **Detener el editor:**
 Presiona `Ctrl+C` en la ventana de Terminal para detener el servidor Flask.
