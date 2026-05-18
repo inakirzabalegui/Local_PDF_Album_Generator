@@ -233,51 +233,8 @@ function setupAlbumEventListeners() {
 function handleAlbumKeyboard(e) {
     if (currentTab !== 'album') return;
 
-    // Photo viewer has its own keys and takes priority over everything
-    const viewerEl = document.getElementById('photo-viewer-modal');
-    if (viewerEl && !viewerEl.classList.contains('hidden')) {
-        if (e.key === 'Escape') { e.preventDefault(); closePhotoViewer(); }
-        else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') { e.preventDefault(); navigatePhotoViewer(-1); }
-        else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') { e.preventDefault(); navigatePhotoViewer(1); }
-        else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); closePhotoViewer(); }
-        else if (e.key === 's' || e.key === 'S') { e.preventDefault(); openPageViewerFromV(); }
-        else if (e.key === 'd' || e.key === 'D') {
-            e.preventDefault();
-            if (selectedPhotoName) {
-                const filenameToDelete = selectedPhotoName;
-                const items = Array.from(document.querySelectorAll('#photo-list .photo-item'));
-                const currentIdx = items.findIndex(el => el.dataset.filename === filenameToDelete);
-                const remaining = items.length - 1;
-                const viewerImg = document.getElementById('photo-viewer-img');
-                const viewerContent = viewerImg ? viewerImg.closest('.photo-viewer-content') : null;
-                const itemEl = items[currentIdx] || null;
-                const wasFromShow = (_vEntryOrigin === 'show');
-                playDeleteFeedback({ viewerEl: viewerContent, itemEl }).then(() => {
-                    deletePhotoByName(filenameToDelete).then(() => {
-                        if (remaining <= 0) {
-                            // Deleted last photo on this page
-                            if (wasFromShow) {
-                                // Return to Show with the now-empty page
-                                closePhotoViewer();
-                                openPageViewer(currentPageIndex);
-                            } else {
-                                closePhotoViewer();
-                            }
-                        } else {
-                            const newItems = Array.from(document.querySelectorAll('#photo-list .photo-item'));
-                            if (newItems.length > 0) {
-                                const nextIdx = Math.min(currentIdx, newItems.length - 1);
-                                openPhotoViewer(newItems[nextIdx].dataset.filename);
-                            } else {
-                                closePhotoViewer();
-                            }
-                        }
-                    });
-                });
-            }
-        }
-        return;
-    }
+    // Photo viewer handles its own keys (PhotoViewer module, capture phase)
+    if (PhotoViewer && PhotoViewer.isOpen()) return;
 
     // Page Show viewer (tecla S) has its own navigation keys
     const showModal = document.getElementById('page-show-modal');
@@ -879,37 +836,49 @@ async function shuffleLayout() {
     }
 }
 
-// Photo Viewer Modal (tecla V)
+// Photo Viewer Modal (tecla V) — delegates to the unified PhotoViewer module
 function openPhotoViewer(filename) {
     if (!filename || !PAGES_DATA || PAGES_DATA.length === 0) return;
     const pageId = PAGES_DATA[currentPageIndex].id;
-    const img = document.getElementById('photo-viewer-img');
-    const caption = document.getElementById('photo-viewer-caption');
-    const modal = document.getElementById('photo-viewer-modal');
-    if (!img || !modal) return;
-
-    img.src = `/api/page/${pageId}/image/${encodeURIComponent(filename)}`;
-    if (caption) caption.textContent = filename;
-    modal.classList.remove('hidden');
-
-    const navHint = document.getElementById('photo-viewer-nav-hint');
-    if (navHint) navHint.textContent = t('photo_viewer.nav_hint');
-
-    const el = document.querySelector(
-        `#photo-list .photo-item[data-filename="${CSS.escape(filename)}"]`
-    );
-    if (el && selectedPhotoName !== filename) {
-        selectPhoto(filename, el);
-    }
+    const items = Array.from(document.querySelectorAll('#photo-list .photo-item'))
+        .map(el => el.dataset.filename);
+    const initialIndex = Math.max(0, items.indexOf(filename));
+    PhotoViewer.open({
+        items,
+        initialIndex,
+        imageUrlFor: (fn) => `/api/page/${pageId}/image/${encodeURIComponent(fn)}`,
+        captionFor: (fn) => fn,
+        wrap: true,
+        onIndexChange: (fn) => {
+            const el = document.querySelector(`#photo-list .photo-item[data-filename="${CSS.escape(fn)}"]`);
+            if (el && selectedPhotoName !== fn) selectPhoto(fn, el);
+        },
+        onDeletePhoto: async (fn, idx) => {
+            const domItems = Array.from(document.querySelectorAll('#photo-list .photo-item'));
+            const viewerContent = document.getElementById('photo-viewer-img')?.closest('.photo-viewer-content');
+            const itemEl = domItems[idx] || null;
+            const wasFromShow = (_vEntryOrigin === 'show');
+            await playDeleteFeedback({ viewerEl: viewerContent, itemEl });
+            await deletePhotoByName(fn);
+            const after = Array.from(document.querySelectorAll('#photo-list .photo-item'));
+            if (after.length === 0) {
+                if (wasFromShow) {
+                    setTimeout(() => openPageViewer(currentPageIndex), 0);
+                }
+                return { remaining: 0, nextIndex: 0 };
+            }
+            const nextIdx = Math.min(idx, after.length - 1);
+            const newItems = after.map(el => el.dataset.filename);
+            return { remaining: after.length, nextIndex: nextIdx, newItems };
+        },
+        extraKeys: {
+            's': (close) => { close(); openPageViewerFromV(); },
+        },
+        onClose: () => { _vEntryOrigin = null; },
+    });
 }
 
-function closePhotoViewer() {
-    const modal = document.getElementById('photo-viewer-modal');
-    if (modal) modal.classList.add('hidden');
-    const img = document.getElementById('photo-viewer-img');
-    if (img) img.src = '';
-    _vEntryOrigin = null;
-}
+function closePhotoViewer() { PhotoViewer.close(); }
 
 // Open V from inside Show: syncs the current page first so deletions target
 // the right page, then opens V on the first photo of that page.
@@ -944,30 +913,10 @@ async function openPhotoViewerFromShow() {
 // Open Show from inside V: closes V and re-opens Show on currentPageIndex
 // with a fresh preview PDF (cache-busted by _renderShowPage).
 function openPageViewerFromV() {
-    const modal = document.getElementById('photo-viewer-modal');
-    if (modal) modal.classList.add('hidden');
-    const img = document.getElementById('photo-viewer-img');
-    if (img) img.src = '';
-    _vEntryOrigin = null;
-
+    PhotoViewer.close();
     if (!PAGES_DATA || PAGES_DATA.length === 0) return;
     const idx = Math.max(0, Math.min(currentPageIndex, PAGES_DATA.length - 1));
     openPageViewer(idx);
-}
-
-function handlePhotoViewerOverlayClick(e) {
-    if (e.target.id === 'photo-viewer-modal') closePhotoViewer();
-}
-
-function navigatePhotoViewer(delta) {
-    const items = Array.from(document.querySelectorAll('#photo-list .photo-item'));
-    if (items.length === 0) return;
-    const currentIdx = items.findIndex(el => el.dataset.filename === selectedPhotoName);
-    const n = items.length;
-    const startIdx = currentIdx < 0 ? 0 : currentIdx;
-    const newIdx = ((startIdx + delta) % n + n) % n;
-    const newFilename = items[newIdx].dataset.filename;
-    if (newFilename) openPhotoViewer(newFilename);
 }
 
 // ── Page Show Viewer (tecla S) ────────────────────────────────────────────

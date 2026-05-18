@@ -301,9 +301,9 @@
             </div>
 
             <!-- Photo Viewer Modal (tecla V) -->
-            <div id="photo-viewer-modal" class="modal hidden" onclick="handlePhotoViewerOverlayClick(event)">
+            <div id="photo-viewer-modal" class="modal hidden">
                 <div class="photo-viewer-content">
-                    <button class="photo-viewer-close" onclick="closePhotoViewer()" title="Cerrar (Esc)">✕</button>
+                    <button class="photo-viewer-close" onclick="PhotoViewer && PhotoViewer.close()" title="Cerrar (Esc)">✕</button>
                     <div id="photo-viewer-nav-hint"></div>
                     <img id="photo-viewer-img" alt="" />
                     <div class="photo-viewer-caption" id="photo-viewer-caption"></div>
@@ -515,6 +515,9 @@
 
     <!-- Dialog system (modals and toasts) -->
     <script src="{{ url_for('static', filename='js/dialogs.js') }}"></script>
+
+    <!-- Unified photo viewer (must load before album.js and source.js) -->
+    <script src="{{ url_for('static', filename='js/photo_viewer.js') }}"></script>
 
     <!-- Album mode scripts -->
     <script src="{{ url_for('static', filename='js/album.js') }}"></script>
