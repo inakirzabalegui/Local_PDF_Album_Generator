@@ -159,6 +159,59 @@ git commit -m "Descripción breve del cambio"
 git push origin main
 ```
 
+### 5. Instalación como app de macOS (`/Applications`)
+
+Para poder lanzar el generador desde Spotlight, Dock o el Finder como cualquier otra aplicación, hay un bundle `Album Generator.app` que envuelve `python make_album.py --app`. El bundle no se versiona en git (`dist/` está en `.gitignore`), así que se reconstruye con un script.
+
+**Instalación / reinstalación:**
+
+```bash
+# Desde la raíz del proyecto, con el .venv ya creado e instalado
+./scripts/install_app.sh
+```
+
+El script:
+1. Regenera el iconset y `favicon.png` con `scripts/generate_icon.py` (requiere Pillow del `.venv`).
+2. Compila `assets/AppIcon.icns` con `iconutil` (incluido en macOS).
+3. Compone el bundle en `dist/Album Generator.app/` con `Info.plist` y un `launcher` que apunta a la ruta absoluta del proyecto actual.
+4. Copia el bundle a `/Applications/Album Generator.app/` (reemplazando cualquier versión previa).
+5. Refresca el caché de Launch Services para que el icono aparezca actualizado.
+
+Tras ejecutarlo, la app está disponible desde Spotlight (`⌘+espacio` → "Album Generator"), Launchpad y el Finder. Los logs se escriben en `~/Library/Logs/AlbumGenerator.log`.
+
+**Recuperación tras formatear el laptop:**
+
+Pasos completos para dejar la app funcionando desde cero en un Mac nuevo:
+
+```bash
+# 1. Clonar el repo en la ruta esperada por el launcher
+mkdir -p ~/Coding
+cd ~/Coding
+git clone <URL_DEL_REPOSITORIO> Local_PDF_Album_Generator
+cd Local_PDF_Album_Generator
+
+# 2. Crear el entorno virtual e instalar dependencias
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 3. Construir e instalar la .app en /Applications
+./scripts/install_app.sh
+
+# 4. (Opcional) Lanzarla
+open "/Applications/Album Generator.app"
+```
+
+> **Importante**: el `launcher` dentro del bundle codifica la ruta absoluta del proyecto en tiempo de instalación. Si clonas el repo en una ruta distinta a `~/Coding/Local_PDF_Album_Generator`, re-ejecutar `./scripts/install_app.sh` regenera el launcher con la nueva ruta — no edites el bundle a mano.
+
+> **Importante**: para que la recuperación funcione tras un wipe, el repo remoto debe incluir `scripts/install_app.sh`, `scripts/generate_icon.py` y, si quieres preservar el icono exacto, los PNGs de `assets/AppIcon.iconset/`. Asegúrate de tener estos archivos commiteados y pusheados antes de borrar la máquina.
+
+**Desinstalación:**
+
+```bash
+rm -rf "/Applications/Album Generator.app"
+```
+
 ## Uso
 
 **Importante:** La aplicación se ejecuta siempre desde la raíz del proyecto (`Local_PDF_Album_Generator/`) con el entorno virtual activado.

@@ -12,6 +12,10 @@ pip install -r requirements.txt
 
 All commands must be run from the project root with the virtualenv activated.
 
+### macOS `.app` install (`/Applications`)
+
+`./scripts/install_app.sh` builds `dist/Album Generator.app` from scratch (icon → iconset → `.icns` → bundle with `Info.plist` + `launcher`) and installs it into `/Applications`. The `launcher` hardcodes the absolute project path at install time; re-run the script if the project moves. Designed for fresh-Mac recovery: clone repo → `python3.13 -m venv .venv && pip install -r requirements.txt` → `./scripts/install_app.sh`. `dist/` is gitignored — make sure `scripts/install_app.sh`, `scripts/generate_icon.py`, and `assets/AppIcon.iconset/*.png` are committed for recovery to work. Logs land in `~/Library/Logs/AlbumGenerator.log`.
+
 ## Key Commands
 
 | Action | Command |
